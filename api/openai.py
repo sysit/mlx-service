@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from loguru import logger
 
 from models import ModelManager
+from cache import get_cache
 
 
 router = APIRouter()
@@ -149,16 +150,39 @@ def build_prompt(tokenizer, messages: list) -> str:
 
 
 async def generate_sync(model, tokenizer, messages: list, max_tokens: int, temperature: float, model_name: str) -> dict:
-    """同步生成"""
+    """同步生成（支持 prefix cache）"""
     from mlx_lm import generate
     from mlx_lm.sample_utils import make_sampler
+    from mlx_lm.models.cache import make_prompt_cache
     
+    cache = get_cache()
     sampler = make_sampler(temp=temperature) if temperature > 0 else None
     prompt = build_prompt(tokenizer, messages)
+    tokens = tokenizer.encode(prompt, add_special_tokens=False)
     
-    response = generate(model, tokenizer, prompt=prompt, max_tokens=max_tokens, sampler=sampler, verbose=False)
+    # 检查缓存
+    prompt_cache = None
+    if cache:
+        prompt_cache, remaining = cache.lookup(tokens)
+        if prompt_cache:
+            logger.debug(f"Cache hit: {len(tokens)} tokens")
+            # 需要处理剩余 tokens，简化处理：完整重算
+            prompt_cache = None
     
-    prompt_tokens = len(tokenizer.encode(prompt, add_special_tokens=False))
+    # 创建或复用 prompt_cache
+    if prompt_cache is None:
+        prompt_cache = make_prompt_cache(model)
+    
+    response = generate(
+        model, tokenizer, prompt=prompt, max_tokens=max_tokens,
+        sampler=sampler, verbose=False, prompt_cache=prompt_cache
+    )
+    
+    # 存储缓存
+    if cache:
+        cache.store(tokens, prompt_cache, id(model))
+    
+    prompt_tokens = len(tokens)
     completion_tokens = len(tokenizer.encode(response, add_special_tokens=False))
     
     return {
@@ -172,19 +196,27 @@ async def generate_sync(model, tokenizer, messages: list, max_tokens: int, tempe
 
 
 async def stream_generate(model, tokenizer, messages: list, max_tokens: int, temperature: float, model_name: str) -> AsyncGenerator[str, None]:
-    """流式生成"""
-    from mlx_lm import stream_generate
+    """流式生成（支持 prefix cache）"""
+    from mlx_lm import stream_generate as mlx_stream
     from mlx_lm.sample_utils import make_sampler
+    from mlx_lm.models.cache import make_prompt_cache
     
+    cache = get_cache()
     sampler = make_sampler(temp=temperature) if temperature > 0 else None
     prompt = build_prompt(tokenizer, messages)
+    tokens = tokenizer.encode(prompt, add_special_tokens=False)
+    
+    # 创建 prompt_cache（流式场景暂不缓存命中，因为需要处理剩余 tokens）
+    prompt_cache = make_prompt_cache(model)
     
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
     created = int(time.time())
     first = True
     
-    for chunk in stream_generate(model, tokenizer, prompt=prompt, max_tokens=max_tokens, sampler=sampler):
-        # chunk.text 是增量文本
+    for chunk in mlx_stream(
+        model, tokenizer, prompt, max_tokens=max_tokens,
+        sampler=sampler, prompt_cache=prompt_cache
+    ):
         if chunk.text:
             delta = {"content": chunk.text}
             if first:
@@ -192,6 +224,10 @@ async def stream_generate(model, tokenizer, messages: list, max_tokens: int, tem
                 first = False
             yield make_chunk(completion_id, created, model_name, delta)
         await asyncio.sleep(0)
+    
+    # 生成完成后存储缓存
+    if cache:
+        cache.store(tokens, prompt_cache, id(model))
     
     yield make_chunk(completion_id, created, model_name, {}, "stop")
     yield "data: [DONE]\n\n"
