@@ -88,6 +88,33 @@ async def cache_clear():
 
 
 @app.middleware("http")
+async def access_log_middleware(request: Request, call_next):
+    """访问日志中间件"""
+    start_time = time.time()
+    
+    # 处理请求
+    response = await call_next(request)
+    
+    # 记录访问日志
+    duration = (time.time() - start_time) * 1000
+    status = response.status_code
+    method = request.method
+    path = request.url.path
+    
+    # 状态码颜色
+    if status < 400:
+        status_str = f"{status}"
+    elif status < 500:
+        status_str = f"{status}"
+    else:
+        status_str = f"{status}"
+    
+    logger.info(f"{method} {path} → {status_str} ({duration:.1f}ms)")
+    
+    return response
+
+
+@app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     # 只读接口免认证
     public_paths = [
@@ -117,7 +144,8 @@ async def auth_middleware(request: Request, call_next):
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled exception: {exc}")
+    # 错误日志记录到单独文件
+    logger.bind(error=True).exception(f"Unhandled exception on {request.method} {request.url.path}: {exc}")
     return JSONResponse(status_code=500, content={"error": str(exc)})
 
 

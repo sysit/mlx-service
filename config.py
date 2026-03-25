@@ -70,12 +70,26 @@ class Config:
     
     def _setup_logging(self):
         logger.remove()
+        
+        # 控制台输出
         logger.add(sys.stdout, level=self.LOG_LEVEL)
+        
+        # 服务日志（启动 + 访问）
         logger.add(
             self.LOGS_DIR / "service_{time:YYYY-MM-DD}.log",
             rotation="10 MB",
             retention="7 days",
             level=self.LOG_LEVEL,
+            filter=lambda record: not record["extra"].get("error", False),
+        )
+        
+        # 错误日志（单独文件）
+        logger.add(
+            self.LOGS_DIR / "error_{time:YYYY-MM-DD}.log",
+            rotation="10 MB",
+            retention="30 days",
+            level="ERROR",
+            filter=lambda record: record["extra"].get("error", False) or record["level"].no >= 40,
         )
 
 
