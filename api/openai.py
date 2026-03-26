@@ -493,7 +493,6 @@ SUPPORTED_AUDIO_FORMATS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm"}
 
 async def transcribe_audio(model, audio_path: str, model_name: str) -> dict:
     """音频转录（支持超时和错误恢复）"""
-    from mlx_audio.stt.generate import generate_transcription
     
     try:
         # 使用 asyncio.to_thread 在线程中运行阻塞的 transcription
@@ -502,7 +501,7 @@ async def transcribe_audio(model, audio_path: str, model_name: str) -> dict:
             result = await asyncio.wait_for(
                 loop.run_in_executor(
                     None,
-                    lambda: generate_transcription(model, audio_path=audio_path)
+                    lambda: model.generate(audio_path, language="auto")
                 ),
                 timeout=config.GENERATION_TIMEOUT
             )
