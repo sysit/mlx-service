@@ -32,6 +32,7 @@ class Config:
     # 生成
     MAX_TOKENS: int = 16384
     TEMPERATURE: float = 0.7
+    GENERATION_TIMEOUT: int = 300  # 生成超时（秒）
     
     # Cache
     ENABLE_PREFIX_CACHE: bool = True
@@ -58,6 +59,8 @@ class Config:
             self.PORT = int(os.getenv("PORT"))
         if os.getenv("MAX_TOKENS"):
             self.MAX_TOKENS = int(os.getenv("MAX_TOKENS"))
+        if os.getenv("GENERATION_TIMEOUT"):
+            self.GENERATION_TIMEOUT = int(os.getenv("GENERATION_TIMEOUT"))
         if os.getenv("API_KEYS"):
             self.API_KEYS = {k.strip() for k in os.getenv("API_KEYS").split(",") if k.strip()}
         

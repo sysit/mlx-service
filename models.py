@@ -20,6 +20,7 @@ from loguru import logger
 
 import mlx.core as mx
 from mlx_lm import load as load_lm
+from mlx_vlm import load as load_vlm
 
 
 def detect_model_type(model_path: Path) -> dict:
@@ -46,9 +47,17 @@ def detect_model_type(model_path: Path) -> dict:
         model_type = config.get("model_type", "")
         
         # 判断是否是 VL 模型
-        is_vl = bool(config.get("vision_config")) or \
-                "vl" in model_type.lower() or \
-                "ForConditionalGeneration" in arch
+        # 条件：架构名称包含 ForConditionalGeneration 且有实际的 vision_config
+        is_vl = False
+        if "ForConditionalGeneration" in arch:
+            # 检查 vision_config 是否有实际的视觉模型配置
+            vision_config = config.get("vision_config", {})
+            # 排除 Qwen3.5 MoE 这类有占位 vision_config 但不是 VL 的模型
+            if vision_config and "depth" in vision_config and vision_config.get("depth", 0) > 30:
+                is_vl = True
+            # 或者模型类型明确包含 vl
+            if "vl" in model_type.lower():
+                is_vl = True
         
         # 判断是否是 MoE 模型
         text_config = config.get("text_config", {})
@@ -231,30 +240,34 @@ class ModelManager:
             if model_path is None:
                 raise ValueError(f"模型不存在: {name}")
             
-            logger.info(f"🔄 加载模型: {name} <- {model_path}")
+            # 从 config.json 获取模型类型（加载前）
+            model_type = self.registry.get_model_type(name)
+            is_vl = model_type.get("is_vl", False)
+            
+            logger.info(f"🔄 加载模型: {name} <- {model_path} {'(VL)' if is_vl else ''}")
             start = time.time()
             
-            model, tokenizer = load_lm(str(model_path))
+            if is_vl:
+                model, processor = load_vlm(str(model_path))
+            else:
+                model, processor = load_lm(str(model_path))
             
             load_time = time.time() - start
             logger.info(f"✅ 模型 {name} 加载完成 ({load_time:.1f}s)")
             
-            # 从 config.json 获取模型类型
-            model_type = self.registry.get_model_type(name)
-            
             loaded = LoadedModel(
                 name=name,
                 model=model,
-                processor=tokenizer,
+                processor=processor,
                 config=getattr(model, 'config', None),
                 loaded_at=time.time(),
                 last_used=time.time(),
-                is_vl=model_type.get("is_vl", False),
+                is_vl=is_vl,
                 is_moe=model_type.get("is_moe", False),
             )
             self._loaded[name] = loaded
             
-            return model, tokenizer
+            return model, processor
     
     def unload(self, name: str) -> bool:
         """卸载模型"""
