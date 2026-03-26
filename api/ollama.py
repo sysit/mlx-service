@@ -2,6 +2,7 @@
 """
 MLX Service - Ollama Compatible API
 """
+import asyncio
 import time
 from typing import List, Optional, Dict, Any
 
@@ -9,9 +10,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from loguru import logger
+import mlx.core as mx
 
 from models import ModelManager
-from api.openai import set_model_manager, chat_completions, ChatRequest, ChatMessage
+from api.openai import set_model_manager, chat_completions, ChatRequest, ChatMessage, build_prompt, build_prompt_vl_manual
+from config import config
 
 
 router = APIRouter()
@@ -71,7 +74,7 @@ async def ollama_tags():
 @router.post("/api/chat")
 async def ollama_chat(request: OllamaChatRequest):
     """Ollama 兼容：聊天"""
-    from api.openai import model_manager
+    from api.openai import model_manager, cleanup_on_error
     from mlx_lm import generate as mlx_generate
     from mlx_lm.sample_utils import make_sampler
     
@@ -90,28 +93,47 @@ async def ollama_chat(request: OllamaChatRequest):
     max_tokens = options.get("num_predict", 8192)
     temperature = options.get("temperature", 0.7)
     
-    # 构建 prompt
+    # 构建 prompt（使用共享函数）
     messages = [{"role": m["role"], "content": m["content"]} for m in request.messages]
     
     if is_vl:
-        # VL 模型使用手动构建
-        prompt_parts = []
-        for msg in messages:
-            prompt_parts.append(f"<|im_start|>{msg['role']}\n{msg['content']}<|im_end|>")
-        prompt_parts.append("<|im_start|>assistant\n")
-        prompt = "\n".join(prompt_parts)
+        prompt = build_prompt_vl_manual(messages)
     else:
-        from api.openai import build_prompt
         prompt = build_prompt(processor, messages)
     
     sampler = make_sampler(temp=temperature) if temperature > 0 else None
     
-    if is_vl:
-        from mlx_vlm import generate as vlm_generate
-        response = vlm_generate(model, processor, prompt=prompt, image=None, max_tokens=max_tokens, sampler=sampler, verbose=False)
-        response = response.text if hasattr(response, 'text') else str(response)
-    else:
-        response = mlx_generate(model, processor, prompt=prompt, max_tokens=max_tokens, sampler=sampler, verbose=False)
+    try:
+        loop = asyncio.get_event_loop()
+        
+        if is_vl:
+            from mlx_vlm import generate as vlm_generate
+            response = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: vlm_generate(model, processor, prompt=prompt, image=None, max_tokens=max_tokens, sampler=sampler, verbose=False)
+                ),
+                timeout=config.GENERATION_TIMEOUT
+            )
+            response = response.text if hasattr(response, 'text') else str(response)
+        else:
+            response = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: mlx_generate(model, processor, prompt=prompt, max_tokens=max_tokens, sampler=sampler, verbose=False)
+                ),
+                timeout=config.GENERATION_TIMEOUT
+            )
+    
+    except asyncio.TimeoutError:
+        logger.error(f"Ollama chat timeout after {config.GENERATION_TIMEOUT}s for model {request.model}")
+        cleanup_on_error(request.model)
+        return JSONResponse(status_code=504, content={"error": f"Generation timeout after {config.GENERATION_TIMEOUT}s"})
+    
+    except Exception as e:
+        logger.exception(f"Ollama chat failed for model {request.model}: {e}")
+        cleanup_on_error(request.model)
+        return JSONResponse(status_code=500, content={"error": str(e)})
     
     return {
         "model": request.model,
@@ -124,7 +146,7 @@ async def ollama_chat(request: OllamaChatRequest):
 @router.post("/api/generate")
 async def ollama_generate(request: OllamaGenerateRequest):
     """Ollama 兼容：生成"""
-    from api.openai import model_manager
+    from api.openai import model_manager, cleanup_on_error
     from mlx_lm import generate as mlx_generate
     from mlx_lm.sample_utils import make_sampler
     
@@ -143,22 +165,45 @@ async def ollama_generate(request: OllamaGenerateRequest):
     max_tokens = options.get("num_predict", 8192)
     temperature = options.get("temperature", 0.7)
     
-    # 构建 prompt
+    # 构建 prompt（使用共享函数）
     if is_vl:
-        # VL 模型使用手动构建
-        prompt = f"<|im_start|>user\n{request.prompt}<|im_end|>\n<|im_start|>assistant\n"
+        prompt = build_prompt_vl_manual([{"role": "user", "content": request.prompt}])
     else:
-        from api.openai import build_prompt
         prompt = build_prompt(processor, [{"role": "user", "content": request.prompt}])
     
     sampler = make_sampler(temp=temperature) if temperature > 0 else None
     
-    if is_vl:
-        from mlx_vlm import generate as vlm_generate
-        response = vlm_generate(model, processor, prompt=prompt, image=None, max_tokens=max_tokens, sampler=sampler, verbose=False)
-        response = response.text if hasattr(response, 'text') else str(response)
-    else:
-        response = mlx_generate(model, processor, prompt=prompt, max_tokens=max_tokens, sampler=sampler, verbose=False)
+    try:
+        loop = asyncio.get_event_loop()
+        
+        if is_vl:
+            from mlx_vlm import generate as vlm_generate
+            response = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: vlm_generate(model, processor, prompt=prompt, image=None, max_tokens=max_tokens, sampler=sampler, verbose=False)
+                ),
+                timeout=config.GENERATION_TIMEOUT
+            )
+            response = response.text if hasattr(response, 'text') else str(response)
+        else:
+            response = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: mlx_generate(model, processor, prompt=prompt, max_tokens=max_tokens, sampler=sampler, verbose=False)
+                ),
+                timeout=config.GENERATION_TIMEOUT
+            )
+    
+    except asyncio.TimeoutError:
+        logger.error(f"Ollama generate timeout after {config.GENERATION_TIMEOUT}s for model {request.model}")
+        cleanup_on_error(request.model)
+        return JSONResponse(status_code=504, content={"error": f"Generation timeout after {config.GENERATION_TIMEOUT}s"})
+    
+    except Exception as e:
+        logger.exception(f"Ollama generate failed for model {request.model}: {e}")
+        cleanup_on_error(request.model)
+        return JSONResponse(status_code=500, content={"error": str(e)})
     
     prompt_tokens = len(processor.encode(prompt, add_special_tokens=False)) if hasattr(processor, 'encode') else 0
     completion_tokens = len(processor.encode(response, add_special_tokens=False)) if hasattr(processor, 'encode') else 0

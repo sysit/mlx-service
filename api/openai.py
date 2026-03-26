@@ -219,7 +219,7 @@ async def chat_completions(request: ChatRequest):
 # ============ Generation Functions ============
 
 def build_prompt(tokenizer, messages: list) -> str:
-    """构建 prompt，禁用 thinking"""
+    """构建 prompt，禁用 thinking（共享函数）"""
     if hasattr(tokenizer, 'apply_chat_template'):
         try:
             return tokenizer.apply_chat_template(
@@ -228,6 +228,15 @@ def build_prompt(tokenizer, messages: list) -> str:
         except TypeError:
             return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     return "\n".join([f"{m['role']}: {m['content']}" for m in messages])
+
+
+def build_prompt_vl_manual(messages: list) -> str:
+    """VL 模型手动构建 prompt（Qwen 格式）"""
+    prompt_parts = []
+    for msg in messages:
+        prompt_parts.append(f"<|im_start|>{msg['role']}\n{msg['content']}<|im_end|>")
+    prompt_parts.append("<|im_start|>assistant\n")
+    return "\n".join(prompt_parts)
 
 
 def build_prompt_vl(processor, messages: List[ChatMessage], image_token: str) -> str:
@@ -244,12 +253,8 @@ def build_prompt_vl(processor, messages: List[ChatMessage], image_token: str) ->
         except (TypeError, ValueError):
             pass
     
-    # 手动构建 prompt (Qwen 格式)
-    prompt_parts = []
-    for msg in text_messages:
-        prompt_parts.append(f"<|im_start|>{msg['role']}\n{msg['content']}<|im_end|>")
-    prompt_parts.append("<|im_start|>assistant\n")
-    return "\n".join(prompt_parts)
+    # 手动构建 prompt（使用共享函数）
+    return build_prompt_vl_manual(text_messages)
 
 
 async def generate_sync(model, tokenizer, messages: list, max_tokens: int, temperature: float, model_name: str) -> dict:
