@@ -30,15 +30,16 @@ def detect_model_type(model_path: Path) -> dict:
     
     Returns:
         {
-            "is_vl": bool,  # 是否是视觉语言模型
-            "is_moe": bool, # 是否是 MoE 模型
-            "arch": str,    # 架构名称
+            "is_vl": bool,    # 是否是视觉语言模型
+            "is_audio": bool, # 是否是音频模型
+            "is_moe": bool,   # 是否是 MoE 模型
+            "arch": str,      # 架构名称
         }
     """
     config_path = model_path / "config.json"
     
     if not config_path.exists():
-        return {"is_vl": False, "is_moe": False, "arch": "unknown"}
+        return {"is_vl": False, "is_audio": False, "is_moe": False, "arch": "unknown"}
     
     try:
         with open(config_path, "r") as f:
@@ -46,6 +47,9 @@ def detect_model_type(model_path: Path) -> dict:
         
         arch = config.get("architectures", ["unknown"])[0] if config.get("architectures") else "unknown"
         model_type = config.get("model_type", "")
+        
+        # 判断是否是 Audio 模型（Whisper 等）
+        is_audio = model_type.lower() == "whisper" or "whisper" in model_type.lower()
         
         # 判断是否是 VL 模型
         # 条件：架构名称包含 ForConditionalGeneration 且有实际的 vision_config
@@ -67,12 +71,13 @@ def detect_model_type(model_path: Path) -> dict:
         
         return {
             "is_vl": is_vl,
+            "is_audio": is_audio,
             "is_moe": is_moe,
             "arch": arch,
         }
     except Exception as e:
         logger.warning(f"读取模型配置失败 {model_path}: {e}")
-        return {"is_vl": False, "is_moe": False, "arch": "unknown"}
+        return {"is_vl": False, "is_audio": False, "is_moe": False, "arch": "unknown"}
 
 
 @dataclass
@@ -85,6 +90,7 @@ class LoadedModel:
     loaded_at: float
     last_used: float
     is_vl: bool = False
+    is_audio: bool = False
     is_moe: bool = False
     memory_gb: float = 0.0  # 模型内存占用估算
     
@@ -172,14 +178,14 @@ class ModelRegistry:
         # 别名匹配
         if name_lower in self._aliases:
             actual_name = self._aliases[name_lower]
-            return self._model_types.get(actual_name, {"is_vl": False, "is_moe": False, "arch": "unknown"})
+            return self._model_types.get(actual_name, {"is_vl": False, "is_audio": False, "is_moe": False, "arch": "unknown"})
         
         # 模糊匹配
         for model_name, info in self._model_types.items():
             if name_lower in model_name or model_name.startswith(name_lower):
                 return info
         
-        return {"is_vl": False, "is_moe": False, "arch": "unknown"}
+        return {"is_vl": False, "is_audio": False, "is_moe": False, "arch": "unknown"}
     
     def get_model_size(self, name: str) -> float:
         """获取模型内存占用估算 (GB)"""
@@ -210,6 +216,7 @@ class ModelRegistry:
                 "name": name,
                 "path": str(path),
                 "is_vl": model_type.get("is_vl", False),
+                "is_audio": model_type.get("is_audio", False),
                 "is_moe": model_type.get("is_moe", False),
                 "arch": model_type.get("arch", "unknown"),
                 "memory_gb": round(self._model_sizes.get(name, 0.0), 1),
@@ -300,11 +307,17 @@ class ModelManager:
             # 从 config.json 获取模型类型（加载前）
             model_type = self.registry.get_model_type(name)
             is_vl = model_type.get("is_vl", False)
+            is_audio = model_type.get("is_audio", False)
             
-            logger.info(f"🔄 加载模型: {name} <- {model_path} {'(VL)' if is_vl else ''}")
+            model_type_str = "(VL)" if is_vl else "(Audio)" if is_audio else ""
+            logger.info(f"🔄 加载模型: {name} <- {model_path} {model_type_str}")
             start = time.time()
             
-            if is_vl:
+            if is_audio:
+                # 使用 mlx-audio 加载音频模型
+                from mlx_audio.stt.utils import load_model as load_audio
+                model, processor = load_audio(str(model_path)), None
+            elif is_vl:
                 model, processor = load_vlm(str(model_path))
             else:
                 model, processor = load_lm(str(model_path))
@@ -320,6 +333,7 @@ class ModelManager:
                 loaded_at=time.time(),
                 last_used=time.time(),
                 is_vl=is_vl,
+                is_audio=is_audio,
                 is_moe=model_type.get("is_moe", False),
                 memory_gb=new_model_memory,
             )
@@ -344,6 +358,7 @@ class ModelManager:
                 {
                     "name": name,
                     "is_vl": loaded.is_vl,
+                    "is_audio": loaded.is_audio,
                     "is_moe": loaded.is_moe,
                     "memory_gb": round(loaded.memory_gb, 1),
                     "loaded_at": loaded.loaded_at,

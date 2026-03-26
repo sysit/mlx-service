@@ -6,9 +6,11 @@ import time
 import uuid
 import asyncio
 import json
+import tempfile
+import os
 from typing import List, Optional, Dict, Any, AsyncGenerator
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, File, UploadFile, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from loguru import logger
@@ -481,3 +483,106 @@ async def stream_generate_vl(model, processor, messages: List[ChatMessage], imag
         cleanup_on_error(model_name)
         yield make_chunk(completion_id, created, model_name, {"content": f"\n[Error: {str(e)}]"}, "stop")
         yield "data: [DONE]\n\n"
+
+
+# ============ Audio Transcription API ============
+
+# 支持的音频格式
+SUPPORTED_AUDIO_FORMATS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm"}
+
+
+async def transcribe_audio(model, audio_path: str, model_name: str) -> dict:
+    """音频转录（支持超时和错误恢复）"""
+    from mlx_audio.stt.generate import generate_transcription
+    
+    try:
+        # 使用 asyncio.to_thread 在线程中运行阻塞的 transcription
+        loop = asyncio.get_event_loop()
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: generate_transcription(model, audio_path=audio_path)
+                ),
+                timeout=config.GENERATION_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"Audio transcription timeout after {config.GENERATION_TIMEOUT}s for model {model_name}")
+            cleanup_on_error(model_name)
+            raise HTTPException(504, f"Transcription timeout after {config.GENERATION_TIMEOUT}s")
+        
+        text = result.text if hasattr(result, 'text') else str(result)
+        
+        return {
+            "text": text,
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Audio transcription failed for model {model_name}: {e}")
+        cleanup_on_error(model_name)
+        raise HTTPException(500, f"Transcription failed: {str(e)}")
+
+
+@router.post("/v1/audio/transcriptions")
+async def audio_transcriptions(
+    file: UploadFile = File(...),
+    model: str = Form(...),
+):
+    """
+    音频转录 API (OpenAI 兼容格式)
+    
+    支持 WAV, MP3, M4A, FLAC, OGG, WEBM 格式
+    """
+    if not model_manager:
+        raise HTTPException(500, "Model manager not initialized")
+    
+    # 检查文件格式
+    file_ext = os.path.splitext(file.filename)[1].lower() if file.filename else ""
+    if file_ext not in SUPPORTED_AUDIO_FORMATS:
+        raise HTTPException(
+            400, 
+            f"Unsupported audio format: {file_ext}. Supported formats: {', '.join(SUPPORTED_AUDIO_FORMATS)}"
+        )
+    
+    try:
+        # 获取模型
+        audio_model, _ = model_manager.get(model)
+        loaded_info = model_manager.list_loaded()
+        loaded_models = loaded_info.get("models", [])
+        is_audio = any(m["name"] == model and m.get("is_audio", False) for m in loaded_models)
+        
+        if not is_audio:
+            raise HTTPException(400, f"Model {model} is not an audio model")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    
+    # 保存上传的音频到临时文件
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+            content = await file.read()
+            tmp_file.write(content)
+            tmp_path = tmp_file.name
+        
+        logger.info(f"🎤 转录音频: {file.filename} ({len(content)} bytes) using {model}")
+        
+        # 执行转录
+        result = await transcribe_audio(audio_model, tmp_path, model)
+        
+        logger.info(f"✅ 转录完成: {result['text'][:50]}...")
+        
+        return result
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Audio transcription failed: {e}")
+        raise HTTPException(500, f"Transcription failed: {str(e)}")
+    finally:
+        # 清理临时文件
+        if 'tmp_path' in locals():
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
