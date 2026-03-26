@@ -24,6 +24,7 @@ class Config:
     DEFAULT_MODEL: str = "qwen3.5-122b"
     MAX_LOADED_MODELS: int = 2
     MODEL_IDLE_TIMEOUT_SEC: int = 1800
+    MAX_MEMORY_GB: float = 120.0  # 内存预算上限，留 8GB 给系统
     
     # 服务
     HOST: str = "0.0.0.0"

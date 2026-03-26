@@ -8,6 +8,7 @@ MLX Service - Model Management
 3. LRU 淘汰
 4. 空闲自动卸载
 5. 基于 config.json 识别模型类型
+6. 内存预算控制
 """
 import json
 import time
@@ -85,6 +86,7 @@ class LoadedModel:
     last_used: float
     is_vl: bool = False
     is_moe: bool = False
+    memory_gb: float = 0.0  # 模型内存占用估算
     
     def touch(self):
         """更新最后使用时间"""
@@ -98,6 +100,7 @@ class ModelRegistry:
         self.models_dir = models_dir
         self._models: Dict[str, Path] = {}
         self._model_types: Dict[str, dict] = {}
+        self._model_sizes: Dict[str, float] = {}  # 模型大小 (GB)
         self._aliases: Dict[str, str] = {}
         self._scan()
     
@@ -120,6 +123,15 @@ class ModelRegistry:
                     # 检测模型类型
                     model_info = detect_model_type(model_dir)
                     self._model_types[name] = model_info
+                    
+                    # 估算模型大小（磁盘大小作为内存估算）
+                    try:
+                        size_kb = sum(f.stat().st_size for f in model_dir.rglob("*") if f.is_file()) / 1024
+                        size_gb = size_kb / (1024 * 1024)
+                        # 运行时额外开销约 10%
+                        self._model_sizes[name] = size_gb * 1.1
+                    except Exception:
+                        self._model_sizes[name] = 0.0
                     
                     # 生成别名
                     parts = name.split("-")
@@ -169,6 +181,26 @@ class ModelRegistry:
         
         return {"is_vl": False, "is_moe": False, "arch": "unknown"}
     
+    def get_model_size(self, name: str) -> float:
+        """获取模型内存占用估算 (GB)"""
+        name_lower = name.lower()
+        
+        # 直接匹配
+        if name_lower in self._model_sizes:
+            return self._model_sizes[name_lower]
+        
+        # 别名匹配
+        if name_lower in self._aliases:
+            actual_name = self._aliases[name_lower]
+            return self._model_sizes.get(actual_name, 0.0)
+        
+        # 模糊匹配
+        for model_name, size in self._model_sizes.items():
+            if name_lower in model_name or model_name.startswith(name_lower):
+                return size
+        
+        return 0.0
+    
     def list_models(self) -> list:
         """列出所有可用模型"""
         result = []
@@ -180,17 +212,19 @@ class ModelRegistry:
                 "is_vl": model_type.get("is_vl", False),
                 "is_moe": model_type.get("is_moe", False),
                 "arch": model_type.get("arch", "unknown"),
+                "memory_gb": round(self._model_sizes.get(name, 0.0), 1),
             })
         return result
 
 
 class ModelManager:
-    """模型管理器 - 按需加载、LRU 淘汰、空闲卸载"""
+    """模型管理器 - 按需加载、LRU 淘汰、空闲卸载、内存预算控制"""
     
-    def __init__(self, registry: ModelRegistry, max_loaded: int = 2, idle_timeout: int = 1800):
+    def __init__(self, registry: ModelRegistry, max_loaded: int = 2, idle_timeout: int = 1800, max_memory_gb: float = 120.0):
         self.registry = registry
         self.max_loaded = max_loaded
         self.idle_timeout = idle_timeout
+        self.max_memory_gb = max_memory_gb
         
         # 已加载的模型 (name -> LoadedModel)
         self._loaded: OrderedDict[str, LoadedModel] = OrderedDict()
@@ -200,6 +234,10 @@ class ModelManager:
         self._running = True
         self._checker = threading.Thread(target=self._idle_checker, daemon=True)
         self._checker.start()
+    
+    def _current_memory(self) -> float:
+        """计算当前已加载模型的内存占用"""
+        return sum(loaded.memory_gb for loaded in self._loaded.values())
     
     def _idle_checker(self):
         """定期检查并卸载空闲模型"""
@@ -228,7 +266,26 @@ class ModelManager:
                 self._loaded[name].touch()
                 return self._loaded[name].model, self._loaded[name].processor
             
-            # 检查是否超过最大数量
+            # 获取新模型的内存估算
+            new_model_memory = self.registry.get_model_size(name)
+            current_memory = self._current_memory()
+            
+            logger.debug(f"📊 内存预算: 当前 {current_memory:.1f}GB + 新模型 {new_model_memory:.1f}GB / 上限 {self.max_memory_gb}GB")
+            
+            # 检查单个模型是否就超过预算
+            if new_model_memory > self.max_memory_gb:
+                logger.warning(f"⚠️ 模型 {name} 内存占用 {new_model_memory:.1f}GB 超过预算 {self.max_memory_gb}GB")
+            
+            # 检查是否需要卸载模型（内存预算）
+            while current_memory + new_model_memory > self.max_memory_gb and len(self._loaded) > 0:
+                oldest_name = next(iter(self._loaded))
+                oldest_memory = self._loaded[oldest_name].memory_gb
+                logger.info(f"🔄 卸载模型 {oldest_name} ({oldest_memory:.1f}GB) - 内存预算控制")
+                del self._loaded[oldest_name]
+                mx.clear_cache()
+                current_memory = self._current_memory()
+            
+            # 检查是否超过最大数量（作为备用限制）
             if len(self._loaded) >= self.max_loaded:
                 oldest_name = next(iter(self._loaded))
                 logger.info(f"🔄 卸载模型 {oldest_name}（LRU）")
@@ -264,6 +321,7 @@ class ModelManager:
                 last_used=time.time(),
                 is_vl=is_vl,
                 is_moe=model_type.get("is_moe", False),
+                memory_gb=new_model_memory,
             )
             self._loaded[name] = loaded
             
@@ -282,16 +340,22 @@ class ModelManager:
     def list_loaded(self) -> list:
         """列出已加载的模型"""
         with self._lock:
-            return [
+            result = [
                 {
                     "name": name,
                     "is_vl": loaded.is_vl,
                     "is_moe": loaded.is_moe,
+                    "memory_gb": round(loaded.memory_gb, 1),
                     "loaded_at": loaded.loaded_at,
                     "last_used": loaded.last_used,
                 }
                 for name, loaded in self._loaded.items()
             ]
+            return {
+                "models": result,
+                "total_memory_gb": round(self._current_memory(), 1),
+                "max_memory_gb": self.max_memory_gb,
+            }
     
     def is_loaded(self, name: str) -> bool:
         """检查模型是否已加载"""

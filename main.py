@@ -32,12 +32,14 @@ async def lifespan(app: FastAPI):
         registry=registry,
         max_loaded=config.MAX_LOADED_MODELS,
         idle_timeout=config.MODEL_IDLE_TIMEOUT_SEC,
+        max_memory_gb=config.MAX_MEMORY_GB,
     )
     openai.set_model_manager(model_manager)
     
     logger.success(f"✅ 服务就绪: http://{config.HOST}:{config.PORT}")
     logger.info(f"📁 模型目录: {config.MODELS_DIR}")
     logger.info(f"🤖 可用模型: {[m['name'] for m in registry.list_models()]}")
+    logger.info(f"💾 内存预算: {config.MAX_MEMORY_GB}GB")
     
     yield
     
