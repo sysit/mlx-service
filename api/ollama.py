@@ -46,7 +46,8 @@ async def ollama_tags():
     models = []
     
     # 已加载的模型
-    for m in model_manager.list_loaded():
+    loaded_info = model_manager.list_loaded()
+    for m in loaded_info.get("models", []):
         models.append({
             "name": m["name"],
             "model": m["name"],
@@ -80,7 +81,8 @@ async def ollama_chat(request: OllamaChatRequest):
     try:
         model, processor = model_manager.get(request.model)
         loaded_info = model_manager.list_loaded()
-        is_vl = any(m["name"] == request.model and m["is_vl"] for m in loaded_info)
+        loaded_models = loaded_info.get("models", [])
+        is_vl = any(m["name"] == request.model and m["is_vl"] for m in loaded_models)
     except Exception as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
     
@@ -132,7 +134,8 @@ async def ollama_generate(request: OllamaGenerateRequest):
     try:
         model, processor = model_manager.get(request.model)
         loaded_info = model_manager.list_loaded()
-        is_vl = any(m["name"] == request.model and m["is_vl"] for m in loaded_info)
+        loaded_models = loaded_info.get("models", [])
+        is_vl = any(m["name"] == request.model and m["is_vl"] for m in loaded_models)
     except Exception as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
     

@@ -180,7 +180,8 @@ async def chat_completions(request: ChatRequest):
     try:
         model, processor = model_manager.get(request.model)
         loaded_info = model_manager.list_loaded()
-        is_vl = any(m["name"] == request.model and m["is_vl"] for m in loaded_info)
+        loaded_models = loaded_info.get("models", [])
+        is_vl = any(m["name"] == request.model and m["is_vl"] for m in loaded_models)
     except Exception as e:
         raise HTTPException(400, f"Model not found: {request.model}")
     
