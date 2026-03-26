@@ -138,7 +138,10 @@ async def list_models():
     if not model_manager:
         raise HTTPException(500, "Model manager not initialized")
     
-    models = [ModelInfo(id=m["name"]) for m in model_manager.list_loaded()]
+    loaded_info = model_manager.list_loaded()
+    # loaded_info 是 {"models": [...], "total_memory_gb": ..., "max_memory_gb": ...}
+    loaded_models = loaded_info.get("models", [])
+    models = [ModelInfo(id=m["name"]) for m in loaded_models]
     models += [ModelInfo(id=m["name"]) for m in model_manager.registry.list_models() if not model_manager.is_loaded(m["name"])]
     
     return {"object": "list", "data": [m.model_dump() for m in models]}
@@ -148,7 +151,7 @@ async def list_models():
 async def list_loaded_models():
     if not model_manager:
         raise HTTPException(500, "Model manager not initialized")
-    return {"models": model_manager.list_loaded()}
+    return model_manager.list_loaded()
 
 
 @router.post("/v1/models/{model_name}/load")
