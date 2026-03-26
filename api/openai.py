@@ -558,6 +558,7 @@ async def audio_transcriptions(
         raise HTTPException(400, str(e))
     
     # 保存上传的音频到临时文件
+    tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
             content = await file.read()
@@ -580,7 +581,7 @@ async def audio_transcriptions(
         raise HTTPException(500, f"Transcription failed: {str(e)}")
     finally:
         # 清理临时文件
-        if 'tmp_path' in locals():
+        if tmp_path and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
             except Exception:

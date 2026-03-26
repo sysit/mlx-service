@@ -53,7 +53,7 @@ app = FastAPI(title="MLX Service", version="3.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:*", "http://127.0.0.1:*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -146,9 +146,14 @@ async def auth_middleware(request: Request, call_next):
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    # 错误日志记录到单独文件
-    logger.bind(error=True).exception(f"Unhandled exception on {request.method} {request.url.path}: {exc}")
-    return JSONResponse(status_code=500, content={"error": str(exc)})
+    """全局异常处理器，避免泄露内部信息"""
+    import uuid
+    error_id = str(uuid.uuid4())[:8]
+    logger.bind(error=True, error_id=error_id).exception(f"Unhandled exception: {exc}")
+    return JSONResponse(
+        status_code=500, 
+        content={"error": "Internal server error", "error_id": error_id}
+    )
 
 
 if __name__ == "__main__":
