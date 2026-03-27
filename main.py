@@ -15,7 +15,7 @@ from loguru import logger
 from config import config
 from models import ModelRegistry, ModelManager
 from cache import init_cache
-from api import openai, ollama
+from api import openai, ollama, anthropic
 
 
 @asynccontextmanager
@@ -35,6 +35,7 @@ async def lifespan(app: FastAPI):
         max_memory_gb=config.MAX_MEMORY_GB,
     )
     openai.set_model_manager(model_manager)
+    anthropic.set_model_manager(model_manager)
     
     logger.success(f"✅ 服务就绪: http://{config.HOST}:{config.PORT}")
     logger.info(f"📁 模型目录: {config.MODELS_DIR}")
@@ -49,7 +50,7 @@ async def lifespan(app: FastAPI):
     mx.clear_cache()
 
 
-app = FastAPI(title="MLX Service", version="3.0.0", lifespan=lifespan)
+app = FastAPI(title="MLX Service", version="3.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -61,11 +62,12 @@ app.add_middleware(
 
 app.include_router(openai.router)
 app.include_router(ollama.router)
+app.include_router(anthropic.router)
 
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "service": "mlx-service", "version": "3.0.0"}
+    return {"status": "ok", "service": "mlx-service", "version": "3.1.0"}
 
 
 @app.get("/health")
