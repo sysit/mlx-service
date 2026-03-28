@@ -24,6 +24,31 @@ from mlx_lm import load as load_lm
 from mlx_vlm import load as load_vlm
 
 
+@staticmethod
+def _check_vision_weights(model_path: Path) -> bool:
+    """检查模型权重是否包含 vision tower"""
+    try:
+        # 检查 model.safetensors.index.json
+        index_path = model_path / "model.safetensors.index.json"
+        if index_path.exists():
+            import json
+            with open(index_path) as f:
+                index = json.load(f)
+            weight_map = index.get("weight_map", {})
+            return any("vision" in k.lower() for k in weight_map.keys())
+        
+        # 如果没有 index 文件，检查单个 safetensors 文件
+        safetensors = list(model_path.glob("*.safetensors"))
+        if safetensors:
+            from safetensors import safe_open
+            with safe_open(safetensors[0], framework="mlx") as f:
+                return any("vision" in k.lower() for k in f.keys())
+    except Exception:
+        pass
+    
+    return False
+
+
 def detect_model_type(model_path: Path) -> dict:
     """
     从 config.json 检测模型类型
@@ -52,17 +77,32 @@ def detect_model_type(model_path: Path) -> dict:
         is_audio = model_type.lower() == "whisper" or "whisper" in model_type.lower()
         
         # 判断是否是 VL 模型
-        # 条件：架构名称包含 ForConditionalGeneration 且有实际的 vision_config
+        # 条件：
+        # 1. 顶层有 image_token_id 且权重文件包含 vision weights
+        # 2. 或者架构名称包含 ForConditionalGeneration 且有实际的 vision_config
+        # 3. 或者模型类型明确包含 vl
         is_vl = False
-        if "ForConditionalGeneration" in arch:
-            # 检查 vision_config 是否有实际的视觉模型配置
+        
+        # 最可靠的判断：顶层有 image_token_id 且有权重
+        if config.get("image_token_id") is not None:
+            # 还需要检查权重文件是否真的有 vision weights
+            # 有些 distill 模型有 image_token_id 但移除了 vision tower
+            has_vision_weights = _check_vision_weights(model_path)
+            if has_vision_weights:
+                is_vl = True
+        # 或者有 vision_start_token_id
+        elif config.get("vision_start_token_id") is not None:
+            has_vision_weights = _check_vision_weights(model_path)
+            if has_vision_weights:
+                is_vl = True
+        # 架构判断
+        elif "ForConditionalGeneration" in arch:
             vision_config = config.get("vision_config", {})
-            # 排除 Qwen3.5 MoE 这类有占位 vision_config 但不是 VL 的模型
-            if vision_config and "depth" in vision_config and vision_config.get("depth", 0) > 30:
+            if vision_config and vision_config.get("in_channels", 0) > 0:
                 is_vl = True
-            # 或者模型类型明确包含 vl
-            if "vl" in model_type.lower():
-                is_vl = True
+        # 模型类型包含 vl
+        if not is_vl and "vl" in model_type.lower():
+            is_vl = True
         
         # 判断是否是 MoE 模型
         text_config = config.get("text_config", {})

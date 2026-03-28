@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """测试 API 端点"""
 import sys
-sys.path.insert(0, str(__file__).rsplit('/', 1)[0].rsplit('/', 1)[0])
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import requests
 

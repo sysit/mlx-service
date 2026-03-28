@@ -17,8 +17,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from loguru import logger
 
-from models import ModelManager
-from config import config
+from mlx_service.models import ModelManager
+from mlx_service.config import config
 
 
 router = APIRouter()

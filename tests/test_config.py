@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """测试配置"""
 import sys
-sys.path.insert(0, str(__file__).rsplit('/', 1)[0].rsplit('/', 1)[0])
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import config
+from mlx_service.config import config
 
 
 def test_config():

@@ -12,9 +12,9 @@ from pydantic import BaseModel
 from loguru import logger
 import mlx.core as mx
 
-from models import ModelManager
-from api.openai import set_model_manager, chat_completions, ChatRequest, ChatMessage, build_prompt, build_prompt_vl_manual
-from config import config
+from mlx_service.models import ModelManager
+from mlx_service.api.openai import set_model_manager, chat_completions, ChatRequest, ChatMessage, build_prompt, build_prompt_vl_manual
+from mlx_service.config import config
 
 
 router = APIRouter()

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """测试模型管理"""
 import sys
-sys.path.insert(0, str(__file__).rsplit('/', 1)[0].rsplit('/', 1)[0])
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pathlib import Path
-from models import detect_model_type, ModelRegistry
+from mlx_service.models import detect_model_type, ModelRegistry
 
 
 def test_detect_model_type():

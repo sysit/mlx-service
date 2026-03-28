@@ -12,10 +12,10 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
-from config import config
-from models import ModelRegistry, ModelManager
-from cache import init_cache
-from api import openai, ollama, anthropic
+from mlx_service.config import config
+from mlx_service.models import ModelRegistry, ModelManager
+from mlx_service.cache import init_cache
+from mlx_service.api import openai, ollama, anthropic
 
 
 @asynccontextmanager
@@ -77,14 +77,14 @@ async def health():
 
 @app.get("/v1/cache/stats")
 async def cache_stats():
-    from cache import get_cache
+    from mlx_service.cache import get_cache
     cache = get_cache()
     return cache.get_stats() if cache else {"enabled": False}
 
 
 @app.post("/v1/cache/clear")
 async def cache_clear():
-    from cache import get_cache
+    from mlx_service.cache import get_cache
     cache = get_cache()
     if cache:
         cache.clear()

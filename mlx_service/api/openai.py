@@ -16,9 +16,9 @@ from pydantic import BaseModel, Field
 from loguru import logger
 import mlx.core as mx
 
-from models import ModelManager
-from cache import get_cache
-from config import config
+from mlx_service.models import ModelManager
+from mlx_service.cache import get_cache
+from mlx_service.config import config
 
 
 router = APIRouter()
