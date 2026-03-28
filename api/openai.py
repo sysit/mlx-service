@@ -241,27 +241,36 @@ def build_prompt_vl_manual(messages: list) -> str:
     return "\n".join(prompt_parts)
 
 
-def build_prompt_vl(processor, messages: List[ChatMessage], image_token: str) -> str:
+def build_prompt_vl(processor, messages: List[ChatMessage], image_token: str, model_config: dict = None) -> str:
     """构建 VL 模型的 prompt"""
+    from mlx_vlm.prompt_utils import apply_chat_template as vlm_apply_chat_template
+    
     # 构建带 image_token 的文本内容
     text_messages = build_text_content(messages, image_token)
     
-    # 尝试使用 processor 的 chat template
+    # 使用 mlx_vlm 的 apply_chat_template（支持 enable_thinking）
+    try:
+        return vlm_apply_chat_template(
+            processor,
+            model_config or {},
+            text_messages,
+            add_generation_prompt=True,
+            enable_thinking=False
+        )
+    except Exception as e:
+        logger.debug(f"VL prompt template fallback: {e}")
+        pass
+    
+    # 尝试使用 processor 的 chat template（fallback）
     if hasattr(processor, 'apply_chat_template'):
         try:
             return processor.apply_chat_template(
-                text_messages, tokenize=False, add_generation_prompt=True,
-                enable_thinking=False
-            )
-        except TypeError:
-            # 不支持 enable_thinking 参数，回退到不带参数的版本
-            return processor.apply_chat_template(
                 text_messages, tokenize=False, add_generation_prompt=True
             )
-        except ValueError:
+        except (TypeError, ValueError):
             pass
     
-    # 手动构建 prompt（使用共享函数）
+    # 手动构建 prompt（最终 fallback）
     return build_prompt_vl_manual(text_messages)
 
 
@@ -280,7 +289,7 @@ async def generate_sync(model, tokenizer, messages: list, max_tokens: int, tempe
         # 检查缓存
         prompt_cache = None
         if cache:
-            prompt_cache, remaining = cache.lookup(tokens)
+            prompt_cache, remaining = cache.lookup(tokens, id(model))
             if prompt_cache:
                 logger.debug(f"Cache hit: {len(tokens)} tokens")
                 prompt_cache = None
@@ -392,7 +401,8 @@ async def generate_sync_vl(model, processor, messages: List[ChatMessage], images
     
     sampler = make_sampler(temp=temperature) if temperature > 0 else None
     image_token = getattr(processor, 'image_token', '<|image_pad|>')
-    prompt = build_prompt_vl(processor, messages, image_token)
+    model_config = getattr(model, 'config', {})
+    prompt = build_prompt_vl(processor, messages, image_token, model_config)
     
     # 使用第一张图片
     image = images[0] if images else None
@@ -449,7 +459,8 @@ async def stream_generate_vl(model, processor, messages: List[ChatMessage], imag
     
     sampler = make_sampler(temp=temperature) if temperature > 0 else None
     image_token = getattr(processor, 'image_token', '<|image_pad|>')
-    prompt = build_prompt_vl(processor, messages, image_token)
+    model_config = getattr(model, 'config', {})
+    prompt = build_prompt_vl(processor, messages, image_token, model_config)
     
     # 使用第一张图片
     image = images[0] if images else None

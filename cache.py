@@ -361,16 +361,20 @@ class TieredCache:
         # 模型映射
         self._model_map: Dict[int, str] = {}
     
-    def _hash_tokens(self, tokens: List[int]) -> str:
-        """计算 token hash"""
-        data = ",".join(map(str, tokens))
+    def _hash_tokens(self, tokens: List[int], model_id: int = 0) -> str:
+        """计算 token hash（包含 model_id 防止跨模型污染）"""
+        data = f"{model_id}:" + ",".join(map(str, tokens))
         return hashlib.sha256(data.encode()).hexdigest()[:16]
     
-    def lookup(self, tokens: List[int]) -> Tuple[Optional[List[Any]], List[int]]:
+    def lookup(self, tokens: List[int], model_id: int = 0) -> Tuple[Optional[List[Any]], List[int]]:
         """
         查找缓存
         
         查找顺序：Hot → Pending buffer → SSD
+        
+        Args:
+            tokens: token 列表
+            model_id: 模型 ID（用于区分不同模型的缓存）
         
         Returns:
             (prompt_cache, remaining_tokens)
@@ -378,7 +382,7 @@ class TieredCache:
         if len(tokens) < self.prefix_min_tokens:
             return None, tokens
         
-        key = self._hash_tokens(tokens)
+        key = self._hash_tokens(tokens, model_id)
         
         # 1. Hot cache 命中
         with self._hot_lock:
@@ -418,7 +422,7 @@ class TieredCache:
         if len(tokens) < self.prefix_min_tokens:
             return None
         
-        key = self._hash_tokens(tokens)
+        key = self._hash_tokens(tokens, model_id)
         
         with self._hot_lock:
             # 已存在
