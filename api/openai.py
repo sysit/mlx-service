@@ -250,9 +250,15 @@ def build_prompt_vl(processor, messages: List[ChatMessage], image_token: str) ->
     if hasattr(processor, 'apply_chat_template'):
         try:
             return processor.apply_chat_template(
+                text_messages, tokenize=False, add_generation_prompt=True,
+                enable_thinking=False
+            )
+        except TypeError:
+            # 不支持 enable_thinking 参数，回退到不带参数的版本
+            return processor.apply_chat_template(
                 text_messages, tokenize=False, add_generation_prompt=True
             )
-        except (TypeError, ValueError):
+        except ValueError:
             pass
     
     # 手动构建 prompt（使用共享函数）
