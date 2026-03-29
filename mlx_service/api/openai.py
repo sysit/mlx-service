@@ -176,9 +176,7 @@ async def chat_completions(request: ChatRequest):
     
     try:
         model, processor = model_manager.get(request.model)
-        loaded_info = model_manager.list_loaded()
-        loaded_models = loaded_info.get("models", [])
-        is_vl = any(m["name"] == request.model and m["is_vl"] for m in loaded_models)
+        is_vl = model_manager.is_vl(request.model)
     except Exception as e:
         raise HTTPException(400, f"Model not found: {request.model}")
     
@@ -550,9 +548,7 @@ async def audio_transcriptions(
     try:
         # 获取模型
         audio_model, _ = model_manager.get(model)
-        loaded_info = model_manager.list_loaded()
-        loaded_models = loaded_info.get("models", [])
-        is_audio = any(m["name"] == model and m.get("is_audio", False) for m in loaded_models)
+        is_audio = model_manager.is_audio(model)
         
         if not is_audio:
             raise HTTPException(400, f"Model {model} is not an audio model")

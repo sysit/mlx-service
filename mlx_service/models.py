@@ -23,6 +23,8 @@ import mlx.core as mx
 from mlx_lm import load as load_lm
 from mlx_vlm import load as load_vlm
 
+from mlx_service.capabilities import Capability
+
 
 @staticmethod
 def _check_vision_weights(model_path: Path) -> bool:
@@ -59,6 +61,7 @@ def detect_model_type(model_path: Path) -> dict:
             "is_audio": bool, # 是否是音频模型
             "is_moe": bool,   # 是否是 MoE 模型
             "arch": str,      # 架构名称
+            "capabilities": Capability,  # 模型能力
         }
     """
     config_path = model_path / "config.json"
@@ -109,11 +112,19 @@ def detect_model_type(model_path: Path) -> dict:
         num_experts = config.get("num_experts", text_config.get("num_experts", 0))
         is_moe = num_experts > 0 or "moe" in model_type.lower()
         
+        # 计算能力标志
+        capabilities = Capability.TEXT
+        if is_vl:
+            capabilities |= Capability.VISION
+        if is_audio:
+            capabilities |= Capability.AUDIO
+        
         return {
             "is_vl": is_vl,
             "is_audio": is_audio,
             "is_moe": is_moe,
             "arch": arch,
+            "capabilities": capabilities,
         }
     except Exception as e:
         logger.warning(f"读取模型配置失败 {model_path}: {e}")
@@ -133,6 +144,7 @@ class LoadedModel:
     is_audio: bool = False
     is_moe: bool = False
     memory_gb: float = 0.0  # 模型内存占用估算
+    capabilities: Capability = Capability.TEXT  # 模型能力
     
     def touch(self):
         """更新最后使用时间"""
@@ -220,14 +232,14 @@ class ModelRegistry:
         # 别名匹配
         if name_lower in self._aliases:
             actual_name = self._aliases[name_lower]
-            return self._model_types.get(actual_name, {"is_vl": False, "is_audio": False, "is_moe": False, "arch": "unknown"})
+            return self._model_types.get(actual_name, {"is_vl": False, "is_audio": False, "is_moe": False, "arch": "unknown", "capabilities": Capability.TEXT})
         
         # 模糊匹配
         for model_name, info in self._model_types.items():
             if name_lower in model_name or model_name.startswith(name_lower):
                 return info
         
-        return {"is_vl": False, "is_audio": False, "is_moe": False, "arch": "unknown"}
+        return {"is_vl": False, "is_audio": False, "is_moe": False, "arch": "unknown", "capabilities": Capability.TEXT}
     
     def get_model_size(self, name: str) -> float:
         """获取模型内存占用估算 (GB)"""
@@ -385,6 +397,7 @@ class ModelManager:
                 is_audio=is_audio,
                 is_moe=model_type.get("is_moe", False),
                 memory_gb=new_model_memory,
+                capabilities=model_type.get("capabilities", Capability.TEXT),
             )
             self._loaded[name] = loaded
             
@@ -432,3 +445,19 @@ class ModelManager:
         with self._lock:
             self._loaded.clear()
             mx.clear_cache()
+    
+    def has_capability(self, model_id: str, cap: Capability) -> bool:
+        """检查模型是否有指定能力"""
+        with self._lock:
+            loaded = self._loaded.get(model_id)
+            if not loaded:
+                return False
+            return bool(loaded.capabilities & cap)
+    
+    def is_vl(self, model_id: str) -> bool:
+        """向后兼容：检查是否为 VL 模型"""
+        return self.has_capability(model_id, Capability.VISION)
+    
+    def is_audio(self, model_id: str) -> bool:
+        """向后兼容：检查是否为音频模型"""
+        return self.has_capability(model_id, Capability.AUDIO)
