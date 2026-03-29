@@ -7,16 +7,35 @@ from contextlib import asynccontextmanager
 
 import mlx.core as mx
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from mlx_service.config import config
 from mlx_service.models import ModelRegistry, ModelManager
-from mlx_service.cache import init_cache
+from mlx_service.cache import init_cache, get_cache
+from mlx_service.generation import GenerationService
 from mlx_service.api import openai, ollama, anthropic
 
+
+# ============================================================================
+# 依赖注入函数
+# ============================================================================
+
+def get_generation_service(request: Request) -> GenerationService:
+    """获取 GenerationService 实例"""
+    return request.app.state.generation_service
+
+
+def get_model_manager(request: Request) -> ModelManager:
+    """获取 ModelManager 实例"""
+    return request.app.state.model_manager
+
+
+# ============================================================================
+# 服务生命周期
+# ============================================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,6 +53,15 @@ async def lifespan(app: FastAPI):
         idle_timeout=config.MODEL_IDLE_TIMEOUT_SEC,
         max_memory_gb=config.MAX_MEMORY_GB,
     )
+    
+    # 创建 GenerationService（统一生成逻辑）
+    generation_service = GenerationService(model_manager, get_cache(), config)
+    
+    # 注入到 app.state（依赖注入）
+    app.state.model_manager = model_manager
+    app.state.generation_service = generation_service
+    
+    # 向 API 模块注入 model_manager（向后兼容）
     openai.set_model_manager(model_manager)
     anthropic.set_model_manager(model_manager)
     

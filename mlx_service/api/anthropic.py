@@ -3,7 +3,7 @@
 MLX Service - Anthropic Messages API
 
 Provides Anthropic-compatible /v1/messages endpoint.
-Converts between Anthropic and OpenAI formats, reusing existing generation logic.
+Converts between Anthropic and OpenAI formats, uses GenerationService.
 """
 
 import json
@@ -12,12 +12,13 @@ import time
 import asyncio
 from typing import List, Optional, Any, AsyncGenerator
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from loguru import logger
 
 from mlx_service.models import ModelManager
+from mlx_service.generation import GenerationService
 from mlx_service.config import config
 from mlx_service.utils import build_prompt, encode_tokens, cleanup_on_error
 
@@ -224,11 +225,24 @@ def openai_to_anthropic_response(response: dict, model: str) -> AnthropicRespons
     )
 
 
-# ============ Model Manager ============
+# ============ 依赖注入函数 ============
+
+def get_generation_service(request: Request) -> GenerationService:
+    """获取 GenerationService 实例"""
+    return request.app.state.generation_service
+
+
+def get_model_manager(request: Request) -> ModelManager:
+    """获取 ModelManager 实例"""
+    return request.app.state.model_manager
+
+
+# ============ 向后兼容：全局 model_manager ============
 model_manager: ModelManager = None
 
 
 def set_model_manager(mgr: ModelManager):
+    """向后兼容：设置全局 model_manager"""
     global model_manager
     model_manager = mgr
 
@@ -236,15 +250,9 @@ def set_model_manager(mgr: ModelManager):
 # ============ API Endpoint ============
 
 @router.post("/v1/messages")
-async def create_message(request: AnthropicRequest):
+async def create_message(request: AnthropicRequest, req: Request):
     """Anthropic Messages API endpoint."""
-    if not model_manager:
-        raise HTTPException(500, "Model manager not initialized")
-    
-    try:
-        model, tokenizer = model_manager.get(request.model)
-    except Exception as e:
-        raise HTTPException(400, f"Model not found: {request.model}")
+    gen = get_generation_service(req)
     
     # Convert to OpenAI format
     messages = anthropic_to_openai_messages(request)
@@ -253,62 +261,47 @@ async def create_message(request: AnthropicRequest):
     
     if request.stream:
         return StreamingResponse(
-            stream_anthropic(model, tokenizer, messages, max_tokens, temperature, request.model),
+            stream_anthropic(gen, messages, max_tokens, temperature, request.model),
             media_type="text/event-stream",
         )
     else:
-        return await generate_anthropic(model, tokenizer, messages, max_tokens, temperature, request.model)
+        return await generate_anthropic(gen, messages, max_tokens, temperature, request.model)
 
 
 # ============ Generation Functions ============
 
-async def generate_anthropic(model, tokenizer, messages: list, max_tokens: int, temperature: float, model_name: str) -> AnthropicResponse:
-    """Non-streaming generation."""
-    from mlx_lm import generate
-    from mlx_lm.sample_utils import make_sampler
-    from mlx_lm.models.cache import make_prompt_cache
-
-    sampler = make_sampler(temp=temperature) if temperature > 0 else None
-    prompt = build_prompt(tokenizer, messages)
-    tokens = encode_tokens(tokenizer, prompt)
-    prompt_cache = make_prompt_cache(model)
-
+async def generate_anthropic(gen: GenerationService, messages: list, max_tokens: int, temperature: float, model_name: str) -> AnthropicResponse:
+    """Non-streaming generation - 使用 GenerationService."""
     try:
-        loop = asyncio.get_event_loop()
-        response = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: generate(
-                    model, tokenizer, prompt=prompt, max_tokens=max_tokens,
-                    sampler=sampler, verbose=False, prompt_cache=prompt_cache
-                )
-            ),
-            timeout=config.GENERATION_TIMEOUT
+        # 调用 GenerationService 生成
+        result = await gen.generate(
+            model_id=model_name,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=False
         )
-
-        prompt_tokens = len(tokens)
-        completion_tokens = len(encode_tokens(tokenizer, response))
-
-        openai_response = {
-            "choices": [{"message": {"content": response}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
-        }
-        return openai_to_anthropic_response(openai_response, model_name)
-
-    except asyncio.TimeoutError:
-        cleanup_on_error(model_name)
-        raise HTTPException(504, f"Generation timeout after {config.GENERATION_TIMEOUT}s")
+        
+        # 转换为 Anthropic 格式
+        return openai_to_anthropic_response(result, model_name)
+    
     except Exception as e:
         cleanup_on_error(model_name)
         logger.exception(f"Generation failed: {e}")
         raise HTTPException(500, f"Generation failed: {str(e)}")
 
 
-async def stream_anthropic(model, tokenizer, messages: list, max_tokens: int, temperature: float, model_name: str) -> AsyncGenerator[str, None]:
-    """Streaming generation in Anthropic SSE format."""
+async def stream_anthropic(gen: GenerationService, messages: list, max_tokens: int, temperature: float, model_name: str) -> AsyncGenerator[str, None]:
+    """Streaming generation in Anthropic SSE format - 使用 GenerationService."""
     from mlx_lm import stream_generate as mlx_stream
     from mlx_lm.sample_utils import make_sampler
     from mlx_lm.models.cache import make_prompt_cache
+    
+    # 获取模型和 tokenizer（GenerationService 内部处理）
+    try:
+        model, tokenizer = gen.model_manager.get(model_name)
+    except Exception as e:
+        raise HTTPException(400, f"Model not found: {model_name}")
     
     sampler = make_sampler(temp=temperature) if temperature > 0 else None
     prompt = build_prompt(tokenizer, messages)
