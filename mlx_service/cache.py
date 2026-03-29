@@ -114,8 +114,8 @@ class SSDCacheManager:
         self.max_size_bytes = int(max_size_gb * 1024 ** 3)
         self.max_queue_size = max_queue_size
         
-        # 索引：key -> (file_path, token_count, created_at)
-        self._index: Dict[str, Tuple[Path, int, float]] = {}
+        # 索引：key -> (file_path, token_count, created_at, model_id)
+        self._index: Dict[str, Tuple[Path, int, float, int]] = {}
         self._total_size: int = 0
         self._lock = threading.Lock()
         
@@ -142,7 +142,8 @@ class SSDCacheManager:
                 _, metadata = load_prompt_cache(str(f), return_metadata=True)
                 token_count = int(metadata.get("token_count", 0))
                 created_at = float(metadata.get("created_at", time.time()))
-                self._index[key] = (f, token_count, created_at)
+                model_id = int(metadata.get("model_id", 0))
+                self._index[key] = (f, token_count, created_at, model_id)
                 self._total_size += f.stat().st_size
                 count += 1
             except Exception as e:
@@ -183,7 +184,7 @@ class SSDCacheManager:
             
             # 更新索引
             with self._lock:
-                self._index[item.key] = (file_path, item.token_count, item.created_at)
+                self._index[item.key] = (file_path, item.token_count, item.created_at, item.model_id)
                 self._total_size += file_path.stat().st_size
             
             # 从 pending buffer 移除
@@ -406,7 +407,7 @@ class TieredCache:
                 
                 # 提升到 hot cache
                 with self._hot_lock:
-                    self._promote_to_hot(key, prompt_cache, tokens)
+                    self._promote_to_hot(key, prompt_cache, tokens, model_id)
                 
                 return prompt_cache, []
         
@@ -450,7 +451,7 @@ class TieredCache:
         logger.debug(f"Cache stored (hot): {key}, tokens={len(tokens)}")
         return key
     
-    def _promote_to_hot(self, key: str, prompt_cache: List[Any], tokens: List[int]):
+    def _promote_to_hot(self, key: str, prompt_cache: List[Any], tokens: List[int], model_id: int = 0):
         """从 cold 提升到 hot（需要在 hot_lock 内调用）"""
         # 淘汰
         while len(self._hot_cache) >= self.hot_max_entries:
@@ -460,7 +461,7 @@ class TieredCache:
             prompt_cache=prompt_cache,
             tokens=tokens,
             token_count=len(tokens),
-            model_id=0,
+            model_id=model_id,
             created_at=time.time(),
             last_used=time.time(),
         )

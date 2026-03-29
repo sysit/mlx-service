@@ -41,7 +41,7 @@ class OllamaGenerateRequest(BaseModel):
 @router.get("/api/tags")
 async def ollama_tags():
     """Ollama 兼容：列出模型"""
-    from api.openai import model_manager
+    from mlx_service.api.openai import model_manager
     
     if not model_manager:
         return {"models": []}
@@ -74,7 +74,7 @@ async def ollama_tags():
 @router.post("/api/chat")
 async def ollama_chat(request: OllamaChatRequest):
     """Ollama 兼容：聊天"""
-    from api.openai import model_manager, cleanup_on_error
+    from mlx_service.api.openai import model_manager, cleanup_on_error
     from mlx_lm import generate as mlx_generate
     from mlx_lm.sample_utils import make_sampler
     
@@ -146,7 +146,7 @@ async def ollama_chat(request: OllamaChatRequest):
 @router.post("/api/generate")
 async def ollama_generate(request: OllamaGenerateRequest):
     """Ollama 兼容：生成"""
-    from api.openai import model_manager, cleanup_on_error
+    from mlx_service.api.openai import model_manager, cleanup_on_error
     from mlx_lm import generate as mlx_generate
     from mlx_lm.sample_utils import make_sampler
     
