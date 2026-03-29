@@ -19,6 +19,7 @@ import mlx.core as mx
 from mlx_service.models import ModelManager
 from mlx_service.cache import get_cache
 from mlx_service.config import config
+from mlx_service.utils import build_prompt, cleanup_on_error
 
 
 router = APIRouter()
@@ -115,13 +116,7 @@ def make_chunk(completion_id: str, created: int, model: str, delta: dict, finish
     return f"data: {json.dumps(chunk)}\n\n"
 
 
-def cleanup_on_error(model_name: str = None):
-    """错误后清理资源"""
-    try:
-        mx.clear_cache()
-        logger.debug("GPU cache cleared after error")
-    except Exception as e:
-        logger.warning(f"Failed to clear GPU cache: {e}")
+
 
 
 # ============ Model Manager ============
@@ -220,16 +215,7 @@ async def chat_completions(request: ChatRequest):
 
 # ============ Generation Functions ============
 
-def build_prompt(tokenizer, messages: list) -> str:
-    """构建 prompt，禁用 thinking（共享函数）"""
-    if hasattr(tokenizer, 'apply_chat_template'):
-        try:
-            return tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
-            )
-        except TypeError:
-            return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    return "\n".join([f"{m['role']}: {m['content']}" for m in messages])
+
 
 
 def build_prompt_vl_manual(messages: list) -> str:

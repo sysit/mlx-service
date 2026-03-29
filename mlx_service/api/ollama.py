@@ -13,8 +13,9 @@ from loguru import logger
 import mlx.core as mx
 
 from mlx_service.models import ModelManager
-from mlx_service.api.openai import set_model_manager, chat_completions, ChatRequest, ChatMessage, build_prompt, build_prompt_vl_manual
+from mlx_service.api.openai import set_model_manager, chat_completions, ChatRequest, ChatMessage, build_prompt_vl_manual
 from mlx_service.config import config
+from mlx_service.utils import build_prompt, cleanup_on_error
 
 
 router = APIRouter()
@@ -74,7 +75,7 @@ async def ollama_tags():
 @router.post("/api/chat")
 async def ollama_chat(request: OllamaChatRequest):
     """Ollama 兼容：聊天"""
-    from mlx_service.api.openai import model_manager, cleanup_on_error
+    from mlx_service.api.openai import model_manager
     from mlx_lm import generate as mlx_generate
     from mlx_lm.sample_utils import make_sampler
     
@@ -146,7 +147,7 @@ async def ollama_chat(request: OllamaChatRequest):
 @router.post("/api/generate")
 async def ollama_generate(request: OllamaGenerateRequest):
     """Ollama 兼容：生成"""
-    from mlx_service.api.openai import model_manager, cleanup_on_error
+    from mlx_service.api.openai import model_manager
     from mlx_lm import generate as mlx_generate
     from mlx_lm.sample_utils import make_sampler
     

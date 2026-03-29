@@ -19,6 +19,7 @@ from loguru import logger
 
 from mlx_service.models import ModelManager
 from mlx_service.config import config
+from mlx_service.utils import build_prompt, cleanup_on_error
 
 
 router = APIRouter()
@@ -261,16 +262,7 @@ async def create_message(request: AnthropicRequest):
 
 # ============ Generation Functions ============
 
-def build_prompt(tokenizer, messages: list) -> str:
-    """Build prompt from messages."""
-    if hasattr(tokenizer, 'apply_chat_template'):
-        try:
-            return tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
-            )
-        except TypeError:
-            return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    return "\n".join([f"{m['role']}: {m['content']}" for m in messages])
+
 
 
 def _encode_tokens(tokenizer, text: str) -> list:
