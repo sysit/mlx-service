@@ -44,6 +44,9 @@ class Config:
     # 安全
     API_KEYS: Set[str] = field(default_factory=set)
     
+    # CORS
+    CORS_ORIGINS: list = field(default_factory=lambda: ["http://localhost:*", "http://127.0.0.1:*"])
+    
     # 日志
     LOG_LEVEL: str = "INFO"
     
@@ -64,6 +67,8 @@ class Config:
             self.GENERATION_TIMEOUT = int(os.getenv("GENERATION_TIMEOUT"))
         if os.getenv("API_KEYS"):
             self.API_KEYS = {k.strip() for k in os.getenv("API_KEYS").split(",") if k.strip()}
+        if os.getenv("CORS_ORIGINS"):
+            self.CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS").split(",") if o.strip()]
         
         # 创建目录
         self.LOGS_DIR.mkdir(parents=True, exist_ok=True)
