@@ -273,18 +273,31 @@ def build_prompt(tokenizer, messages: list) -> str:
     return "\n".join([f"{m['role']}: {m['content']}" for m in messages])
 
 
+def _encode_tokens(tokenizer, text: str) -> list:
+    """Safely encode text to tokens, handling VL processors."""
+    # VL processors don't have encode() method, use the underlying tokenizer
+    if hasattr(tokenizer, 'encode'):
+        return tokenizer.encode(text, add_special_tokens=False)
+    elif hasattr(tokenizer, 'tokenizer') and hasattr(tokenizer.tokenizer, 'encode'):
+        return tokenizer.tokenizer.encode(text, add_special_tokens=False)
+    else:
+        # Fallback: return empty list if we can't encode
+        logger.warning(f"Tokenizer {type(tokenizer).__name__} has no encode method")
+        return []
+
+
 async def generate_anthropic(model, tokenizer, messages: list, max_tokens: int, temperature: float, model_name: str) -> AnthropicResponse:
     """Non-streaming generation."""
     from mlx_lm import generate
     from mlx_lm.sample_utils import make_sampler
     from mlx_lm.models.cache import make_prompt_cache
     import mlx.core as mx
-    
+
     sampler = make_sampler(temp=temperature) if temperature > 0 else None
     prompt = build_prompt(tokenizer, messages)
-    tokens = tokenizer.encode(prompt, add_special_tokens=False)
+    tokens = _encode_tokens(tokenizer, prompt)
     prompt_cache = make_prompt_cache(model)
-    
+
     try:
         loop = asyncio.get_event_loop()
         response = await asyncio.wait_for(
@@ -297,16 +310,16 @@ async def generate_anthropic(model, tokenizer, messages: list, max_tokens: int, 
             ),
             timeout=config.GENERATION_TIMEOUT
         )
-        
+
         prompt_tokens = len(tokens)
-        completion_tokens = len(tokenizer.encode(response, add_special_tokens=False))
-        
+        completion_tokens = len(_encode_tokens(tokenizer, response))
+
         openai_response = {
             "choices": [{"message": {"content": response}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
         }
         return openai_to_anthropic_response(openai_response, model_name)
-    
+
     except asyncio.TimeoutError:
         mx.clear_cache()
         raise HTTPException(504, f"Generation timeout after {config.GENERATION_TIMEOUT}s")

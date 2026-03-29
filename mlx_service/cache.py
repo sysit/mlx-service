@@ -294,14 +294,14 @@ class SSDCacheManager:
         # 停止写入线程
         self._running = False
         self._write_queue.put(None)
-        
+
         # 清空 pending
         with self._pending_lock:
             self._pending.clear()
-        
+
         # 清空 SSD
         with self._lock:
-            for file_path, _, _ in self._index.values():
+            for file_path, _, _, _ in self._index.values():
                 try:
                     file_path.unlink()
                 except Exception:
