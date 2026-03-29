@@ -11,6 +11,8 @@ MLX Service - Tiered Prefix Cache
 2. Hot buffer 写入缓冲（写入时立即可读）
 3. 服务重启恢复
 4. 统计信息
+
+P1-2 优化：合并重复的锁操作和统计逻辑
 """
 import hashlib
 import queue
@@ -19,7 +21,7 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from loguru import logger
 
 try:
@@ -30,12 +32,12 @@ except ImportError:
 
 
 # ============================================================================
-# Statistics
+# Statistics (统一统计类)
 # ============================================================================
 
 @dataclass
 class CacheStats:
-    """缓存统计"""
+    """缓存统计（统一 Hot + Cold）"""
     hits: int = 0
     misses: int = 0
     tokens_saved: int = 0
@@ -43,13 +45,12 @@ class CacheStats:
     ssd_saves: int = 0
     ssd_loads: int = 0
     async_writes: int = 0
-    write_queue_size: int = 0
-
+    
     @property
     def hit_rate(self) -> float:
         total = self.hits + self.misses
         return self.hits / total if total > 0 else 0.0
-
+    
     def to_dict(self) -> dict:
         return {
             "hits": self.hits,
@@ -60,8 +61,17 @@ class CacheStats:
             "ssd_saves": self.ssd_saves,
             "ssd_loads": self.ssd_loads,
             "async_writes": self.async_writes,
-            "write_queue_size": self.write_queue_size,
         }
+    
+    def reset(self):
+        """重置统计"""
+        self.hits = 0
+        self.misses = 0
+        self.tokens_saved = 0
+        self.evictions = 0
+        self.ssd_saves = 0
+        self.ssd_loads = 0
+        self.async_writes = 0
 
 
 # ============================================================================
@@ -91,7 +101,7 @@ class PendingWrite:
 
 
 # ============================================================================
-# SSD Cache Manager
+# SSD Cache Manager (简化版)
 # ============================================================================
 
 class SSDCacheManager:
@@ -102,6 +112,8 @@ class SSDCacheManager:
     - 异步写入队列
     - SSD 文件管理
     - 索引维护
+    
+    P1-2: 合并锁操作，简化统计
     """
     
     def __init__(
@@ -109,25 +121,30 @@ class SSDCacheManager:
         cache_dir: Path,
         max_size_gb: float = 30.0,
         max_queue_size: int = 64,
+        stats: CacheStats = None,
     ):
         self.cache_dir = cache_dir
         self.max_size_bytes = int(max_size_gb * 1024 ** 3)
         self.max_queue_size = max_queue_size
         
+        # 使用共享统计对象
+        self.stats = stats or CacheStats()
+        
         # 索引：key -> (file_path, token_count, created_at, model_id)
         self._index: Dict[str, Tuple[Path, int, float, int]] = {}
         self._total_size: int = 0
-        self._lock = threading.Lock()
+        
+        # 统一锁（合并 _lock 和 _pending_lock）
+        self._lock = threading.RLock()
+        
+        # Pending writes buffer（写入前暂存，支持立即读取）
+        self._pending: Dict[str, PendingWrite] = {}
         
         # 异步写入队列
         self._write_queue: queue.Queue[Optional[PendingWrite]] = queue.Queue(maxsize=max_queue_size)
         self._running = True
         self._writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
         self._writer_thread.start()
-        
-        # Pending writes buffer（写入前暂存，支持立即读取）
-        self._pending: Dict[str, PendingWrite] = {}
-        self._pending_lock = threading.Lock()
         
         # 初始化
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -159,9 +176,7 @@ class SSDCacheManager:
                 item = self._write_queue.get(timeout=1.0)
                 if item is None:
                     continue
-                
                 self._write_to_ssd(item)
-                
             except queue.Empty:
                 continue
             except Exception as e:
@@ -182,13 +197,10 @@ class SSDCacheManager:
             }
             save_prompt_cache(str(file_path), item.prompt_cache, metadata)
             
-            # 更新索引
+            # 合并锁操作：同时更新索引和移除 pending
             with self._lock:
                 self._index[item.key] = (file_path, item.token_count, item.created_at, item.model_id)
                 self._total_size += file_path.stat().st_size
-            
-            # 从 pending buffer 移除
-            with self._pending_lock:
                 self._pending.pop(item.key, None)
             
             logger.debug(f"SSD write complete: {item.key}")
@@ -197,16 +209,10 @@ class SSDCacheManager:
             logger.warning(f"Failed to write to SSD: {e}")
     
     def enqueue_write(self, item: PendingWrite) -> bool:
-        """
-        将写入任务加入队列
-        
-        同时存入 pending buffer，支持立即读取
-        """
-        # 先存入 pending buffer
-        with self._pending_lock:
+        """将写入任务加入队列（同时存入 pending buffer）"""
+        with self._lock:
             self._pending[item.key] = item
         
-        # 加入写入队列
         try:
             self._write_queue.put_nowait(item)
             return True
@@ -216,18 +222,13 @@ class SSDCacheManager:
             return True
     
     def load(self, key: str) -> Optional[List[Any]]:
-        """
-        从 SSD 加载缓存
-        
-        先检查 pending buffer，再检查 SSD
-        """
-        # 1. 检查 pending buffer
-        with self._pending_lock:
+        """从 SSD 加载缓存（先检查 pending，再检查 SSD）"""
+        with self._lock:
+            # 1. 检查 pending buffer
             if key in self._pending:
                 return self._pending[key].prompt_cache
-        
-        # 2. 检查 SSD
-        with self._lock:
+            
+            # 2. 检查 SSD 索引
             if key not in self._index:
                 return None
             file_path, _, _ = self._index[key]
@@ -244,25 +245,11 @@ class SSDCacheManager:
     
     def contains(self, key: str) -> bool:
         """检查缓存是否存在"""
-        # 检查 pending buffer
-        with self._pending_lock:
-            if key in self._pending:
-                return True
-        
-        # 检查 SSD 索引
         with self._lock:
-            return key in self._index
+            return key in self._pending or key in self._index
     
     def evict_lru(self, target_size: int = 0) -> int:
-        """
-        LRU 淘汰 SSD 缓存
-        
-        Args:
-            target_size: 目标大小，0 表示淘汰一个
-            
-        Returns:
-            淘汰的字节数
-        """
+        """LRU 淘汰 SSD 缓存"""
         if target_size == 0:
             target_size = self._total_size - int(self.max_size_bytes * 0.9)
         
@@ -291,16 +278,14 @@ class SSDCacheManager:
     
     def clear(self):
         """清空所有缓存"""
-        # 停止写入线程
         self._running = False
         self._write_queue.put(None)
-
-        # 清空 pending
-        with self._pending_lock:
-            self._pending.clear()
-
-        # 清空 SSD
+        
         with self._lock:
+            # 清空 pending
+            self._pending.clear()
+            
+            # 清空 SSD
             for file_path, _, _, _ in self._index.values():
                 try:
                     file_path.unlink()
@@ -310,20 +295,19 @@ class SSDCacheManager:
             self._total_size = 0
     
     def get_stats(self) -> dict:
-        """获取统计信息"""
+        """获取 SSD 统计信息"""
         with self._lock:
-            with self._pending_lock:
-                return {
-                    "entries": len(self._index),
-                    "pending_writes": len(self._pending),
-                    "total_size_mb": round(self._total_size / 1024 / 1024, 1),
-                    "max_size_gb": self.max_size_bytes / 1024 ** 3,
-                    "queue_size": self._write_queue.qsize(),
-                }
+            return {
+                "entries": len(self._index),
+                "pending_writes": len(self._pending),
+                "total_size_mb": round(self._total_size / 1024 / 1024, 1),
+                "max_size_gb": self.max_size_bytes / 1024 ** 3,
+                "queue_size": self._write_queue.qsize(),
+            }
 
 
 # ============================================================================
-# Tiered Cache Manager
+# Tiered Cache Manager (简化版)
 # ============================================================================
 
 class TieredCache:
@@ -332,6 +316,8 @@ class TieredCache:
     
     Hot tier: 内存 LRU 缓存
     Cold tier: SSD 异步持久化
+    
+    P1-2: 合并锁操作，使用共享统计
     """
     
     def __init__(
@@ -344,23 +330,21 @@ class TieredCache:
         self.hot_max_entries = hot_max_entries
         self.prefix_min_tokens = prefix_min_tokens
         
+        # 统计（共享给 SSD）
+        self.stats = CacheStats()
+        
         # Hot cache (内存)
         self._hot_cache: OrderedDict[str, CacheEntry] = OrderedDict()
-        self._hot_lock = threading.Lock()
+        self._lock = threading.RLock()
         
-        # Cold cache (SSD)
+        # Cold cache (SSD) - 使用共享统计
         self._ssd_cache: Optional[SSDCacheManager] = None
         if ssd_cache_dir and HAS_MLX_LM:
             self._ssd_cache = SSDCacheManager(
                 cache_dir=ssd_cache_dir,
                 max_size_gb=ssd_max_size_gb,
+                stats=self.stats,  # 共享统计对象
             )
-        
-        # 统计
-        self.stats = CacheStats()
-        
-        # 模型映射
-        self._model_map: Dict[int, str] = {}
     
     def _hash_tokens(self, tokens: List[int], model_id: int = 0) -> str:
         """计算 token hash（包含 model_id 防止跨模型污染）"""
@@ -368,25 +352,14 @@ class TieredCache:
         return hashlib.sha256(data.encode()).hexdigest()[:16]
     
     def lookup(self, tokens: List[int], model_id: int = 0) -> Tuple[Optional[List[Any]], List[int]]:
-        """
-        查找缓存
-        
-        查找顺序：Hot → Pending buffer → SSD
-        
-        Args:
-            tokens: token 列表
-            model_id: 模型 ID（用于区分不同模型的缓存）
-        
-        Returns:
-            (prompt_cache, remaining_tokens)
-        """
+        """查找缓存（Hot → Pending → SSD）"""
         if len(tokens) < self.prefix_min_tokens:
             return None, tokens
         
         key = self._hash_tokens(tokens, model_id)
         
         # 1. Hot cache 命中
-        with self._hot_lock:
+        with self._lock:
             if key in self._hot_cache:
                 entry = self._hot_cache[key]
                 entry.last_used = time.time()
@@ -406,7 +379,7 @@ class TieredCache:
                 logger.debug(f"Cache hit (cold): {key}")
                 
                 # 提升到 hot cache
-                with self._hot_lock:
+                with self._lock:
                     self._promote_to_hot(key, prompt_cache, tokens, model_id)
                 
                 return prompt_cache, []
@@ -415,17 +388,13 @@ class TieredCache:
         return None, tokens
     
     def store(self, tokens: List[int], prompt_cache: List[Any], model_id: int) -> Optional[str]:
-        """
-        存储缓存
-        
-        存入 hot cache，如果触发淘汰则异步写入 SSD
-        """
+        """存储缓存（存入 hot，触发淘汰则写入 SSD）"""
         if len(tokens) < self.prefix_min_tokens:
             return None
         
         key = self._hash_tokens(tokens, model_id)
         
-        with self._hot_lock:
+        with self._lock:
             # 已存在
             if key in self._hot_cache:
                 self._hot_cache[key].last_used = time.time()
@@ -446,14 +415,12 @@ class TieredCache:
                 last_used=time.time(),
             )
             self._hot_cache[key] = entry
-            self._model_map[model_id] = key
         
         logger.debug(f"Cache stored (hot): {key}, tokens={len(tokens)}")
         return key
     
     def _promote_to_hot(self, key: str, prompt_cache: List[Any], tokens: List[int], model_id: int = 0):
-        """从 cold 提升到 hot（需要在 hot_lock 内调用）"""
-        # 淘汰
+        """从 cold 提升到 hot（需要在 lock 内调用）"""
         while len(self._hot_cache) >= self.hot_max_entries:
             self._evict_hot()
         
@@ -468,7 +435,7 @@ class TieredCache:
         self._hot_cache[key] = entry
     
     def _evict_hot(self):
-        """淘汰 hot cache 条目到 cold cache（需要在 hot_lock 内调用）"""
+        """淘汰 hot 到 cold（需要在 lock 内调用）"""
         if not self._hot_cache:
             return
         
@@ -495,20 +462,19 @@ class TieredCache:
     
     def clear(self):
         """清空所有缓存"""
-        with self._hot_lock:
+        with self._lock:
             self._hot_cache.clear()
-            self._model_map.clear()
         
         if self._ssd_cache:
             self._ssd_cache.clear()
         
-        self.stats = CacheStats()
+        self.stats.reset()
     
     def get_stats(self) -> dict:
         """获取统计信息"""
         stats = self.stats.to_dict()
         
-        with self._hot_lock:
+        with self._lock:
             stats["hot_entries"] = len(self._hot_cache)
             stats["hot_max_entries"] = self.hot_max_entries
         

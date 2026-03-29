@@ -10,12 +10,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from loguru import logger
-import mlx.core as mx
 
 from mlx_service.models import ModelManager
-from mlx_service.api.openai import set_model_manager, chat_completions, ChatRequest, ChatMessage, build_prompt_vl_manual
+from mlx_service.api.openai import set_model_manager, chat_completions, ChatRequest, ChatMessage
 from mlx_service.config import config
-from mlx_service.utils import build_prompt, cleanup_on_error
+from mlx_service.utils import build_prompt, build_prompt_vl_manual, cleanup_on_error
 
 
 router = APIRouter()

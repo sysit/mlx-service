@@ -5,7 +5,6 @@ MLX Service - OpenAI Compatible API
 import time
 import uuid
 import asyncio
-import json
 import tempfile
 import os
 from typing import List, Optional, Dict, Any, AsyncGenerator
@@ -14,12 +13,14 @@ from fastapi import APIRouter, HTTPException, File, UploadFile, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from loguru import logger
-import mlx.core as mx
 
 from mlx_service.models import ModelManager
 from mlx_service.cache import get_cache
 from mlx_service.config import config
-from mlx_service.utils import build_prompt, cleanup_on_error
+from mlx_service.utils import (
+    build_prompt, build_prompt_vl, build_messages, 
+    extract_images, make_chunk, encode_tokens, cleanup_on_error
+)
 
 
 router = APIRouter()
@@ -47,76 +48,6 @@ class ModelInfo(BaseModel):
     object: str = "model"
     created: int = Field(default_factory=lambda: int(time.time()))
     owned_by: str = "local"
-
-
-# ============ Helper Functions ============
-
-def extract_images(messages: List[ChatMessage]) -> List[str]:
-    """从消息中提取图片 URL"""
-    images = []
-    for msg in messages:
-        if isinstance(msg.content, list):
-            for item in msg.content:
-                if isinstance(item, dict):
-                    # OpenAI format: {"type": "image_url", "image_url": {"url": "..."}}
-                    if item.get("type") == "image_url":
-                        url = item.get("image_url", {}).get("url", "")
-                        if url:
-                            images.append(url)
-                    # Alternative format: {"type": "image", "image": "..."}
-                    elif item.get("type") == "image":
-                        img = item.get("image", "")
-                        if img:
-                            images.append(img)
-    return images
-
-
-def build_text_content(messages: List[ChatMessage], image_token: str = "<|image_pad|>") -> list:
-    """构建文本内容，为图片位置插入 image_token"""
-    result = []
-    for msg in messages:
-        if isinstance(msg.content, str):
-            result.append({"role": msg.role, "content": msg.content})
-        elif isinstance(msg.content, list):
-            # 处理多模态内容
-            text_parts = []
-            has_image = False
-            for item in msg.content:
-                if isinstance(item, dict):
-                    if item.get("type") == "text":
-                        text_parts.append(item.get("text", ""))
-                    elif item.get("type") in ("image_url", "image"):
-                        has_image = True
-                        text_parts.insert(0, image_token)  # 图片 token 放在前面
-            
-            content = "\n".join(text_parts) if text_parts else image_token if has_image else ""
-            result.append({"role": msg.role, "content": content})
-        else:
-            result.append({"role": msg.role, "content": str(msg.content)})
-    return result
-
-
-def build_messages(request_messages: List[ChatMessage]) -> list:
-    """转换消息格式（纯文本）"""
-    return [
-        {"role": msg.role, "content": msg.content if isinstance(msg.content, str) else str(msg.content)}
-        for msg in request_messages
-    ]
-
-
-def make_chunk(completion_id: str, created: int, model: str, delta: dict, finish_reason: Optional[str] = None) -> str:
-    """生成 SSE chunk"""
-    chunk = {
-        "id": completion_id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": model,
-        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}]
-    }
-    return f"data: {json.dumps(chunk)}\n\n"
-
-
-
 
 
 # ============ Model Manager ============
@@ -181,7 +112,7 @@ async def chat_completions(request: ChatRequest):
         raise HTTPException(400, f"Model not found: {request.model}")
     
     # 提取图片
-    images = extract_images(request.messages)
+    images = extract_images([m.model_dump() for m in request.messages])
     
     # 检查 VL 模型是否收到图片
     if images and not is_vl:
@@ -201,7 +132,7 @@ async def chat_completions(request: ChatRequest):
             return await generate_sync_vl(model, processor, request.messages, images, max_tokens, request.temperature, request.model)
     
     # 纯文本模型
-    messages = build_messages(request.messages)
+    messages = build_messages([m.model_dump() for m in request.messages])
     if request.stream:
         return StreamingResponse(
             stream_generate(model, processor, messages, max_tokens, request.temperature, request.model),
@@ -213,50 +144,6 @@ async def chat_completions(request: ChatRequest):
 
 # ============ Generation Functions ============
 
-
-
-
-def build_prompt_vl_manual(messages: list) -> str:
-    """VL 模型手动构建 prompt（Qwen 格式）"""
-    prompt_parts = []
-    for msg in messages:
-        prompt_parts.append(f"<|im_start|>{msg['role']}\n{msg['content']}<|im_end|>")
-    prompt_parts.append("<|im_start|>assistant\n")
-    return "\n".join(prompt_parts)
-
-
-def build_prompt_vl(processor, messages: List[ChatMessage], image_token: str, model_config: dict = None) -> str:
-    """构建 VL 模型的 prompt"""
-    from mlx_vlm.prompt_utils import apply_chat_template as vlm_apply_chat_template
-    
-    # 构建带 image_token 的文本内容
-    text_messages = build_text_content(messages, image_token)
-    
-    # 使用 mlx_vlm 的 apply_chat_template（支持 enable_thinking）
-    try:
-        return vlm_apply_chat_template(
-            processor,
-            model_config or {},
-            text_messages,
-            add_generation_prompt=True,
-            enable_thinking=False
-        )
-    except Exception as e:
-        logger.debug(f"VL prompt template fallback: {e}")
-    
-    # 尝试使用 processor 的 chat template（fallback）
-    if hasattr(processor, 'apply_chat_template'):
-        try:
-            return processor.apply_chat_template(
-                text_messages, tokenize=False, add_generation_prompt=True
-            )
-        except (TypeError, ValueError) as e:
-            logger.debug(f"Processor chat template fallback: {e}")
-    
-    # 手动构建 prompt（最终 fallback）
-    return build_prompt_vl_manual(text_messages)
-
-
 async def generate_sync(model, tokenizer, messages: list, max_tokens: int, temperature: float, model_name: str) -> dict:
     """同步生成（支持超时和错误恢复）"""
     from mlx_lm import generate
@@ -266,7 +153,7 @@ async def generate_sync(model, tokenizer, messages: list, max_tokens: int, tempe
     cache = get_cache()
     sampler = make_sampler(temp=temperature) if temperature > 0 else None
     prompt = build_prompt(tokenizer, messages)
-    tokens = tokenizer.encode(prompt, add_special_tokens=False)
+    tokens = encode_tokens(tokenizer, prompt)
     
     try:
         # 检查缓存
@@ -304,7 +191,7 @@ async def generate_sync(model, tokenizer, messages: list, max_tokens: int, tempe
             cache.store(tokens, prompt_cache, id(model))
         
         prompt_tokens = len(tokens)
-        completion_tokens = len(tokenizer.encode(response, add_special_tokens=False))
+        completion_tokens = len(encode_tokens(tokenizer, response))
         
         return {
             "id": f"chatcmpl-{uuid.uuid4().hex[:29]}",
@@ -332,7 +219,7 @@ async def stream_generate(model, tokenizer, messages: list, max_tokens: int, tem
     cache = get_cache()
     sampler = make_sampler(temp=temperature) if temperature > 0 else None
     prompt = build_prompt(tokenizer, messages)
-    tokens = tokenizer.encode(prompt, add_special_tokens=False)
+    tokens = encode_tokens(tokenizer, prompt)
     
     # 创建 prompt_cache
     prompt_cache = make_prompt_cache(model)
@@ -385,7 +272,7 @@ async def generate_sync_vl(model, processor, messages: List[ChatMessage], images
     sampler = make_sampler(temp=temperature) if temperature > 0 else None
     image_token = getattr(processor, 'image_token', '<|image_pad|>')
     model_config = getattr(model, 'config', {})
-    prompt = build_prompt_vl(processor, messages, image_token, model_config)
+    prompt = build_prompt_vl(processor, [m.model_dump() for m in messages], image_token, model_config)
     
     # 使用第一张图片
     image = images[0] if images else None
@@ -415,8 +302,8 @@ async def generate_sync_vl(model, processor, messages: List[ChatMessage], images
         
         response = result.text if hasattr(result, 'text') else str(result)
         
-        prompt_tokens = len(processor.encode(prompt, add_special_tokens=False)) if hasattr(processor, 'encode') else 0
-        completion_tokens = len(processor.encode(response, add_special_tokens=False)) if hasattr(processor, 'encode') else 0
+        prompt_tokens = len(encode_tokens(processor, prompt))
+        completion_tokens = len(encode_tokens(processor, response))
         
         return {
             "id": f"chatcmpl-{uuid.uuid4().hex[:29]}",
@@ -443,7 +330,7 @@ async def stream_generate_vl(model, processor, messages: List[ChatMessage], imag
     sampler = make_sampler(temp=temperature) if temperature > 0 else None
     image_token = getattr(processor, 'image_token', '<|image_pad|>')
     model_config = getattr(model, 'config', {})
-    prompt = build_prompt_vl(processor, messages, image_token, model_config)
+    prompt = build_prompt_vl(processor, [m.model_dump() for m in messages], image_token, model_config)
     
     # 使用第一张图片
     image = images[0] if images else None

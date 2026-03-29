@@ -19,7 +19,7 @@ from loguru import logger
 
 from mlx_service.models import ModelManager
 from mlx_service.config import config
-from mlx_service.utils import build_prompt, cleanup_on_error
+from mlx_service.utils import build_prompt, encode_tokens, cleanup_on_error
 
 
 router = APIRouter()
@@ -262,22 +262,6 @@ async def create_message(request: AnthropicRequest):
 
 # ============ Generation Functions ============
 
-
-
-
-def _encode_tokens(tokenizer, text: str) -> list:
-    """Safely encode text to tokens, handling VL processors."""
-    # VL processors don't have encode() method, use the underlying tokenizer
-    if hasattr(tokenizer, 'encode'):
-        return tokenizer.encode(text, add_special_tokens=False)
-    elif hasattr(tokenizer, 'tokenizer') and hasattr(tokenizer.tokenizer, 'encode'):
-        return tokenizer.tokenizer.encode(text, add_special_tokens=False)
-    else:
-        # Fallback: return empty list if we can't encode
-        logger.warning(f"Tokenizer {type(tokenizer).__name__} has no encode method")
-        return []
-
-
 async def generate_anthropic(model, tokenizer, messages: list, max_tokens: int, temperature: float, model_name: str) -> AnthropicResponse:
     """Non-streaming generation."""
     from mlx_lm import generate
@@ -286,7 +270,7 @@ async def generate_anthropic(model, tokenizer, messages: list, max_tokens: int, 
 
     sampler = make_sampler(temp=temperature) if temperature > 0 else None
     prompt = build_prompt(tokenizer, messages)
-    tokens = _encode_tokens(tokenizer, prompt)
+    tokens = encode_tokens(tokenizer, prompt)
     prompt_cache = make_prompt_cache(model)
 
     try:
@@ -303,7 +287,7 @@ async def generate_anthropic(model, tokenizer, messages: list, max_tokens: int, 
         )
 
         prompt_tokens = len(tokens)
-        completion_tokens = len(_encode_tokens(tokenizer, response))
+        completion_tokens = len(encode_tokens(tokenizer, response))
 
         openai_response = {
             "choices": [{"message": {"content": response}, "finish_reason": "stop"}],
