@@ -81,18 +81,21 @@ class GenerationService:
             logger.warning(f"Non-VL model {model_id} received images, ignoring")
             images = []
         
-        # VL 模型生成
-        if is_vl and images:
+        # VL 模型生成（始终使用 mlx_vlm，避免 TokenizerWrapper eos_token_id 错误）
+        # Fix: VL processor (Qwen3VLProcessor) 没有 eos_token_id 属性
+        # mlx_lm.generate 会尝试包装成 TokenizerWrapper，导致 AttributeError
+        # 因此 VL 模型必须使用 mlx_vlm.generate
+        if is_vl:
             if stream:
                 return self._generate_vl_stream(
-                    model, tokenizer, messages, images, max_tokens, temperature, model_id
+                    model, tokenizer, messages, images or [], max_tokens, temperature, model_id
                 )
             else:
                 return await self._generate_vl(
-                    model, tokenizer, messages, images, max_tokens, temperature, model_id
+                    model, tokenizer, messages, images or [], max_tokens, temperature, model_id
                 )
         
-        # 纯文本生成
+        # 纯文本生成（仅非 VL 模型）
         text_messages = build_messages(messages)
         if stream:
             return self._generate_stream(
