@@ -29,11 +29,13 @@ export API_KEYS="sk-xxx,sk-yyy,sk-prod-xxx"
 # VRAM 限制
 export VRAM_LIMIT_GB="${VRAM_LIMIT_GB:-110}"
 
-echo "🚀 MLX Service v3.0"
+echo "🚀 MLX Service v3.1"
 echo "   模型目录: $MODELS_DIR"
 echo "   默认模型: $DEFAULT_MODEL"
 echo "   端口: $PORT"
+echo "   日志目录: $SCRIPT_DIR/logs"
+echo "   Cache目录: $SCRIPT_DIR/cache"
 echo ""
 
 # 启动服务
-python main.py "$@"
+python -m mlx_service.main "$@"

@@ -141,10 +141,10 @@ async def list_models():
         raise HTTPException(500, "Model manager not initialized")
     
     loaded_info = model_manager.list_loaded()
-    # loaded_info 是 {"models": [...], "total_memory_gb": ..., "max_memory_gb": ...}
     loaded_models = loaded_info.get("models", [])
     models = [ModelInfo(id=m["name"]) for m in loaded_models]
-    models += [ModelInfo(id=m["name"]) for m in model_manager.registry.list_models() if not model_manager.is_loaded(m["name"])]
+    # 使用短别名作为主 ID
+    models += [ModelInfo(id=m["name"]) for m in model_manager.registry.list_models() if not model_manager.is_loaded(m.get("full_name", m["name"]))]
     
     return {"object": "list", "data": [m.model_dump() for m in models]}
 

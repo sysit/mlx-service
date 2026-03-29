@@ -15,7 +15,7 @@ class Config:
     """全局配置"""
     
     # 路径
-    SERVICE_DIR: Path = field(default_factory=lambda: Path(__file__).parent)
+    SERVICE_DIR: Path = field(default_factory=lambda: Path(__file__).parent.parent)  # 顶层目录 ~/mlx-service
     MODELS_DIR: Path = field(default_factory=lambda: Path.home() / "models" / "mlx-community")
     LOGS_DIR: Path = field(init=False)
     CACHE_DIR: Path = field(init=False)

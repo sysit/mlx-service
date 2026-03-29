@@ -147,7 +147,8 @@ class ModelRegistry:
         self._models: Dict[str, Path] = {}
         self._model_types: Dict[str, dict] = {}
         self._model_sizes: Dict[str, float] = {}  # 模型大小 (GB)
-        self._aliases: Dict[str, str] = {}
+        self._aliases: Dict[str, str] = {}  # 短别名 -> 完整名称
+        self._short_names: Dict[str, str] = {}  # 完整名称 -> 短别名
         self._scan()
     
     def _scan(self):
@@ -185,6 +186,7 @@ class ModelRegistry:
                         short_name = parts[0] + "-" + parts[1].split(".")[0]
                         if short_name not in self._models:
                             self._aliases[short_name] = name
+                            self._short_names[name] = short_name
         
         logger.info(f"📦 扫描到 {len(self._models)} 个模型")
     
@@ -252,8 +254,11 @@ class ModelRegistry:
         result = []
         for name, path in self._models.items():
             model_type = self._model_types.get(name, {})
+            # 优先使用短别名
+            short_name = self._short_names.get(name, name)
             result.append({
-                "name": name,
+                "name": short_name,
+                "full_name": name,
                 "path": str(path),
                 "is_vl": model_type.get("is_vl", False),
                 "is_audio": model_type.get("is_audio", False),
@@ -275,7 +280,7 @@ class ModelManager:
         
         # 已加载的模型 (name -> LoadedModel)
         self._loaded: OrderedDict[str, LoadedModel] = OrderedDict()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # 可递归获取，防止死锁
         
         # 启动空闲检查线程
         self._running = True
@@ -312,6 +317,10 @@ class ModelManager:
                 self._loaded.move_to_end(name)
                 self._loaded[name].touch()
                 return self._loaded[name].model, self._loaded[name].processor
+            
+            # 清理 GPU 缓存并等待（防止 Metal 并发冲突）
+            mx.clear_cache()
+            time.sleep(0.5)  # 等待 GPU 操作完成
             
             # 获取新模型的内存估算
             new_model_memory = self.registry.get_model_size(name)
