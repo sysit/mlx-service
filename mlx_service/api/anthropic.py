@@ -283,7 +283,6 @@ async def generate_anthropic(model, tokenizer, messages: list, max_tokens: int, 
     from mlx_lm import generate
     from mlx_lm.sample_utils import make_sampler
     from mlx_lm.models.cache import make_prompt_cache
-    import mlx.core as mx
 
     sampler = make_sampler(temp=temperature) if temperature > 0 else None
     prompt = build_prompt(tokenizer, messages)
@@ -313,10 +312,10 @@ async def generate_anthropic(model, tokenizer, messages: list, max_tokens: int, 
         return openai_to_anthropic_response(openai_response, model_name)
 
     except asyncio.TimeoutError:
-        mx.clear_cache()
+        cleanup_on_error(model_name)
         raise HTTPException(504, f"Generation timeout after {config.GENERATION_TIMEOUT}s")
     except Exception as e:
-        mx.clear_cache()
+        cleanup_on_error(model_name)
         logger.exception(f"Generation failed: {e}")
         raise HTTPException(500, f"Generation failed: {str(e)}")
 
@@ -326,7 +325,6 @@ async def stream_anthropic(model, tokenizer, messages: list, max_tokens: int, te
     from mlx_lm import stream_generate as mlx_stream
     from mlx_lm.sample_utils import make_sampler
     from mlx_lm.models.cache import make_prompt_cache
-    import mlx.core as mx
     
     sampler = make_sampler(temp=temperature) if temperature > 0 else None
     prompt = build_prompt(tokenizer, messages)
@@ -334,6 +332,7 @@ async def stream_anthropic(model, tokenizer, messages: list, max_tokens: int, te
     
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
     created = int(time.time())
+    start_time = time.time()
     
     try:
         # Send message_start event
@@ -345,6 +344,13 @@ async def stream_anthropic(model, tokenizer, messages: list, max_tokens: int, te
         
         # Stream content
         for chunk in mlx_stream(model, tokenizer, prompt, max_tokens=max_tokens, sampler=sampler, prompt_cache=prompt_cache):
+            # 检查超时
+            if time.time() - start_time > config.GENERATION_TIMEOUT:
+                logger.error(f"Anthropic stream generation timeout after {config.GENERATION_TIMEOUT}s")
+                timeout_msg = "\n[Generation timeout]"
+                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': timeout_msg}})}\n\n"
+                break
+            
             if chunk.text:
                 delta = {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": chunk.text}}
                 yield f"event: content_block_delta\ndata: {json.dumps(delta)}\n\n"
@@ -360,6 +366,6 @@ async def stream_anthropic(model, tokenizer, messages: list, max_tokens: int, te
         yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
     
     except Exception as e:
-        mx.clear_cache()
+        cleanup_on_error(model_name)
         logger.exception(f"Stream generation failed: {e}")
         yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
