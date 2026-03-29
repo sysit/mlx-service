@@ -43,8 +43,8 @@ def _check_vision_weights(model_path: Path) -> bool:
             from safetensors import safe_open
             with safe_open(safetensors[0], framework="mlx") as f:
                 return any("vision" in k.lower() for k in f.keys())
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to check vision weights: {e}")
     
     return False
 

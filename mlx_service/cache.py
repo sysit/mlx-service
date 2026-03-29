@@ -284,8 +284,8 @@ class SSDCacheManager:
                     del self._index[key]
                     self._total_size -= size
                     freed += size
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to delete cache file {file_path}: {e}")
             
             return freed
     
@@ -304,8 +304,8 @@ class SSDCacheManager:
             for file_path, _, _, _ in self._index.values():
                 try:
                     file_path.unlink()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to delete cache file {file_path}: {e}")
             self._index.clear()
             self._total_size = 0
     

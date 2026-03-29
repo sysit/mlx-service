@@ -245,7 +245,6 @@ def build_prompt_vl(processor, messages: List[ChatMessage], image_token: str, mo
         )
     except Exception as e:
         logger.debug(f"VL prompt template fallback: {e}")
-        pass
     
     # 尝试使用 processor 的 chat template（fallback）
     if hasattr(processor, 'apply_chat_template'):
@@ -253,8 +252,8 @@ def build_prompt_vl(processor, messages: List[ChatMessage], image_token: str, mo
             return processor.apply_chat_template(
                 text_messages, tokenize=False, add_generation_prompt=True
             )
-        except (TypeError, ValueError):
-            pass
+        except (TypeError, ValueError) as e:
+            logger.debug(f"Processor chat template fallback: {e}")
     
     # 手动构建 prompt（最终 fallback）
     return build_prompt_vl_manual(text_messages)
@@ -587,5 +586,5 @@ async def audio_transcriptions(
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to delete temp file {tmp_path}: {e}")
