@@ -168,7 +168,8 @@ async def stream_generate(model, tokenizer, messages: list, max_tokens: int, tem
     from mlx_service.config import config
     
     gen = GenerationService(model_manager, get_cache(), config)
-    return gen._generate_stream(model, tokenizer, messages, max_tokens, temperature, model_name)
+    async for chunk in gen._generate_stream(model, tokenizer, messages, max_tokens, temperature, model_name):
+        yield chunk
 
 
 async def generate_sync_vl(model, processor, messages: List[ChatMessage], images: List[str], max_tokens: int, temperature: float, model_name: str) -> dict:
@@ -188,7 +189,8 @@ async def stream_generate_vl(model, processor, messages: List[ChatMessage], imag
     from mlx_service.config import config
     
     gen = GenerationService(model_manager, get_cache(), config)
-    return gen._generate_vl_stream(model, processor, [m.model_dump() for m in messages], images, max_tokens, temperature, model_name)
+    async for chunk in gen._generate_vl_stream(model, processor, [m.model_dump() for m in messages], images, max_tokens, temperature, model_name):
+        yield chunk
 
 
 async def transcribe_audio(model, audio_path: str, model_name: str) -> dict:
