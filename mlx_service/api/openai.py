@@ -124,15 +124,22 @@ async def chat_completions(request: ChatRequest, req: Request):
     
     # 调用统一生成
     if request.stream:
-        return StreamingResponse(
-            gen.generate(
+        # 流式：generate(stream=True) 返回异步生成器
+        # 需要先 await 获取生成器，再迭代
+        async def stream_response():
+            stream_gen = await gen.generate(
                 model_id=request.model,
                 messages=[m.model_dump() for m in request.messages],
                 max_tokens=max_tokens,
                 temperature=temperature,
                 stream=True,
                 images=images
-            ),
+            )
+            async for chunk in stream_gen:
+                yield chunk
+        
+        return StreamingResponse(
+            stream_response(),
             media_type="text/event-stream",
         )
     else:
