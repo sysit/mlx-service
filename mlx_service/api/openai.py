@@ -55,7 +55,6 @@ class ModelInfo(BaseModel):
     object: str = "model"
     created: int = Field(default_factory=lambda: int(time.time()))
     owned_by: str = "local"
-    type: str = "text"  # text | vl | audio
 
 
 # ============ 依赖注入函数 ============
@@ -88,30 +87,9 @@ async def list_models(request: Request):
     
     loaded_info = mgr.list_loaded()
     loaded_models = loaded_info.get("models", [])
-    
-    models = []
-    # 已加载的模型
-    for m in loaded_models:
-        model_type = mgr.registry.get_model_type(m["name"])
-        if model_type.get("is_audio", False):
-            t = "audio"
-        elif model_type.get("is_vl", False):
-            t = "vl"
-        else:
-            t = "text"
-        models.append(ModelInfo(id=m["name"], type=t))
-    
-    # 未加载的模型（使用短别名）
-    for m in mgr.registry.list_models():
-        full_name = m.get("full_name", m["name"])
-        if not mgr.is_loaded(full_name):
-            if m.get("is_audio", False):
-                t = "audio"
-            elif m.get("is_vl", False):
-                t = "vl"
-            else:
-                t = "text"
-            models.append(ModelInfo(id=m["name"], type=t))
+    models = [ModelInfo(id=m["name"]) for m in loaded_models]
+    # 使用短别名作为主 ID
+    models += [ModelInfo(id=m["name"]) for m in mgr.registry.list_models() if not mgr.is_loaded(m.get("full_name", m["name"]))]
     
     return {"object": "list", "data": [m.model_dump() for m in models]}
 
