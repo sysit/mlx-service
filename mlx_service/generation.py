@@ -52,6 +52,11 @@ class GenerationService:
         temperature: float = 0.7,
         stream: bool = False,
         images: List[str] = None,
+        # Thinking mode parameters (mlx-vlm 0.4.2)
+        enable_thinking: bool = False,
+        thinking_budget: int = None,
+        thinking_start_token: str = "hla",
+        thinking_end_token: str = "hla",
         **kwargs
     ) -> Union[dict, AsyncGenerator[str, None]]:
         """统一生成入口
@@ -63,6 +68,10 @@ class GenerationService:
             temperature: 温度参数
             stream: 是否流式生成
             images: 图片 URL 列表（VL 模型）
+            enable_thinking: 是否启用 thinking 模式
+            thinking_budget: thinking 预算（token 数）
+            thinking_start_token: thinking 开始标记
+            thinking_end_token: thinking 结束标记
             **kwargs: 其他参数
             
         Returns:
@@ -88,11 +97,19 @@ class GenerationService:
         if is_vl:
             if stream:
                 return self._generate_vl_stream(
-                    model, tokenizer, messages, images or [], max_tokens, temperature, model_id
+                    model, tokenizer, messages, images or [], max_tokens, temperature, model_id,
+                    enable_thinking=enable_thinking,
+                    thinking_budget=thinking_budget,
+                    thinking_start_token=thinking_start_token,
+                    thinking_end_token=thinking_end_token
                 )
             else:
                 return await self._generate_vl(
-                    model, tokenizer, messages, images or [], max_tokens, temperature, model_id
+                    model, tokenizer, messages, images or [], max_tokens, temperature, model_id,
+                    enable_thinking=enable_thinking,
+                    thinking_budget=thinking_budget,
+                    thinking_start_token=thinking_start_token,
+                    thinking_end_token=thinking_end_token
                 )
         
         # 纯文本生成（仅非 VL 模型）
@@ -252,7 +269,12 @@ class GenerationService:
         images: List[str],
         max_tokens: int,
         temperature: float,
-        model_name: str
+        model_name: str,
+        # Thinking mode parameters (mlx-vlm 0.4.2)
+        enable_thinking: bool = False,
+        thinking_budget: int = None,
+        thinking_start_token: str = "hla",
+        thinking_end_token: str = "hla"
     ) -> dict:
         """VL 模型同步生成（支持超时和错误恢复）"""
         from mlx_vlm import generate
@@ -261,7 +283,7 @@ class GenerationService:
         sampler = make_sampler(temp=temperature) if temperature > 0 else None
         image_token = getattr(processor, 'image_token', '<|image_pad|>')
         model_config = getattr(model, 'config', {})
-        prompt = build_prompt_vl(processor, messages, image_token, model_config)
+        prompt = build_prompt_vl(processor, messages, image_token, model_config, enable_thinking=enable_thinking)
         
         # 使用第一张图片
         image = images[0] if images else None
@@ -278,7 +300,11 @@ class GenerationService:
                             image=image,
                             max_tokens=max_tokens,
                             sampler=sampler,
-                            verbose=False
+                            verbose=False,
+                            enable_thinking=enable_thinking,
+                            thinking_budget=thinking_budget,
+                            thinking_start_token=thinking_start_token,
+                            thinking_end_token=thinking_end_token
                         )
                     ),
                     timeout=self.config.GENERATION_TIMEOUT
@@ -317,7 +343,12 @@ class GenerationService:
         images: List[str],
         max_tokens: int,
         temperature: float,
-        model_name: str
+        model_name: str,
+        # Thinking mode parameters (mlx-vlm 0.4.2)
+        enable_thinking: bool = False,
+        thinking_budget: int = None,
+        thinking_start_token: str = "hla",
+        thinking_end_token: str = "hla"
     ) -> AsyncGenerator[str, None]:
         """VL 模型流式生成（支持超时和错误恢复）"""
         from mlx_vlm import stream_generate as vlm_stream
@@ -326,7 +357,7 @@ class GenerationService:
         sampler = make_sampler(temp=temperature) if temperature > 0 else None
         image_token = getattr(processor, 'image_token', '<|image_pad|>')
         model_config = getattr(model, 'config', {})
-        prompt = build_prompt_vl(processor, messages, image_token, model_config)
+        prompt = build_prompt_vl(processor, messages, image_token, model_config, enable_thinking=enable_thinking)
         
         # 使用第一张图片
         image = images[0] if images else None
@@ -342,7 +373,11 @@ class GenerationService:
                 prompt=prompt,
                 image=image,
                 max_tokens=max_tokens,
-                sampler=sampler
+                sampler=sampler,
+                enable_thinking=enable_thinking,
+                thinking_budget=thinking_budget,
+                thinking_start_token=thinking_start_token,
+                thinking_end_token=thinking_end_token
             ):
                 # 检查超时
                 if time.time() - start_time > self.config.GENERATION_TIMEOUT:

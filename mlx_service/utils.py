@@ -21,12 +21,13 @@ from loguru import logger
 # Prompt 构建函数（纯文本）
 # ============================================================================
 
-def build_prompt(tokenizer, messages: list) -> str:
-    """构建 prompt，禁用 thinking（共享函数）
+def build_prompt(tokenizer, messages: list, enable_thinking: bool = False) -> str:
+    """构建 prompt
     
     Args:
         tokenizer: 分词器
         messages: 消息列表，格式为 [{"role": "user", "content": "..."}]
+        enable_thinking: 是否启用 thinking 模式（默认 False）
     
     Returns:
         构建好的 prompt 字符串
@@ -34,7 +35,7 @@ def build_prompt(tokenizer, messages: list) -> str:
     if hasattr(tokenizer, 'apply_chat_template'):
         try:
             return tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+                messages, tokenize=False, add_generation_prompt=True, enable_thinking=enable_thinking
             )
         except TypeError:
             # 不支持 enable_thinking 参数的旧版本
@@ -116,7 +117,7 @@ def build_messages(request_messages: list) -> list:
     ]
 
 
-def build_prompt_vl(processor, messages: list, image_token: str, model_config: dict = None) -> str:
+def build_prompt_vl(processor, messages: list, image_token: str, model_config: dict = None, enable_thinking: bool = False) -> str:
     """构建 VL 模型的 prompt
     
     使用 mlx_vlm 的 apply_chat_template，支持 enable_thinking 参数。
@@ -126,6 +127,7 @@ def build_prompt_vl(processor, messages: list, image_token: str, model_config: d
         messages: 消息列表
         image_token: 图片占位符 token
         model_config: 模型配置（可选）
+        enable_thinking: 是否启用 thinking 模式（默认 False）
     
     Returns:
         构建好的 prompt 字符串
@@ -142,7 +144,7 @@ def build_prompt_vl(processor, messages: list, image_token: str, model_config: d
             model_config or {},
             text_messages,
             add_generation_prompt=True,
-            enable_thinking=False
+            enable_thinking=enable_thinking
         )
     except Exception as e:
         logger.debug(f"VL prompt template fallback: {e}")

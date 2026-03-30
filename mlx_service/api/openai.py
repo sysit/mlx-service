@@ -43,6 +43,11 @@ class ChatRequest(BaseModel):
     top_p: Optional[float] = 1.0
     stop: Optional[List[str]] = None
     stream: Optional[bool] = False
+    # Thinking mode parameters (mlx-vlm 0.4.2)
+    enable_thinking: Optional[bool] = False
+    thinking_budget: Optional[int] = None
+    thinking_start_token: Optional[str] = "hla"
+    thinking_end_token: Optional[str] = "hla"
 
 
 class ModelInfo(BaseModel):
@@ -133,7 +138,12 @@ async def chat_completions(request: ChatRequest, req: Request):
                 max_tokens=max_tokens,
                 temperature=temperature,
                 stream=True,
-                images=images
+                images=images,
+                # Thinking mode parameters (mlx-vlm 0.4.2)
+                enable_thinking=request.enable_thinking,
+                thinking_budget=request.thinking_budget,
+                thinking_start_token=request.thinking_start_token,
+                thinking_end_token=request.thinking_end_token
             )
             async for chunk in stream_gen:
                 yield chunk
@@ -149,7 +159,12 @@ async def chat_completions(request: ChatRequest, req: Request):
             max_tokens=max_tokens,
             temperature=temperature,
             stream=False,
-            images=images
+            images=images,
+            # Thinking mode parameters (mlx-vlm 0.4.2)
+            enable_thinking=request.enable_thinking,
+            thinking_budget=request.thinking_budget,
+            thinking_start_token=request.thinking_start_token,
+            thinking_end_token=request.thinking_end_token
         )
         return result
 
