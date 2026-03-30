@@ -47,7 +47,19 @@ class ModelRegistry:
                     
                     parts = name.split("-")
                     if len(parts) >= 2:
-                        short_name = parts[0] + "-" + parts[1].split(".")[0]
+                        # 根据模型类型添加后缀
+                        is_vl = model_info.get("is_vl", False)
+                        is_audio = model_info.get("is_audio", False)
+                        
+                        base_name = parts[0] + "-" + parts[1].split(".")[0]
+                        
+                        if is_audio:
+                            short_name = base_name + "-audio"
+                        elif is_vl:
+                            short_name = base_name  # VL 模型保持原名
+                        else:
+                            short_name = base_name + "-text"  # 纯文本模型加 -text
+                        
                         if short_name not in self._models:
                             self._aliases[short_name] = name
                             self._short_names[name] = short_name
