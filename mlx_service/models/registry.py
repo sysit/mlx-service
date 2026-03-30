@@ -11,6 +11,14 @@ from mlx_service.capabilities import Capability
 class ModelRegistry:
     """模型注册表 - 扫描和管理可用模型"""
     
+    # 技术参数标记 - 用于别名生成时丢弃
+    TECH_MARKERS = {
+        "4bit", "8bit", "16bit", "fp16", "bf16",  # 量化
+        "8b", "27b", "70b", "122b", "a10b",       # 大小
+        "v1", "v2", "v3",                          # 版本
+        "instruct", "chat",                        # 模式
+    }
+    
     def __init__(self, models_dir: Path):
         self.models_dir = models_dir
         self._models: Dict[str, Path] = {}
@@ -47,7 +55,18 @@ class ModelRegistry:
                     
                     parts = name.split("-")
                     if len(parts) >= 2:
-                        short_name = parts[0] + "-" + parts[1].split(".")[0]
+                        # 处理第二部分，去掉点号后的内容（如 27b.1 → 27b）
+                        second = parts[1].split(".")[0]
+                        
+                        if len(parts) >= 3:
+                            third = parts[2].lower()
+                            if third in self.TECH_MARKERS:
+                                short_name = parts[0] + "-" + second  # 技术参数 → 2部分
+                            else:
+                                short_name = parts[0] + "-" + second + "-" + parts[2]  # 有意义 → 3部分
+                        else:
+                            short_name = parts[0] + "-" + second
+                        
                         if short_name not in self._models:
                             self._aliases[short_name] = name
                             self._short_names[name] = short_name
